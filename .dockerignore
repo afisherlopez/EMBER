@@ -1,0 +1,48 @@
+# Keep the build context (and Cloud Build uploads) small and free of secrets.
+# Only pyproject.toml, README.md, core/, config/, scripts/, docs/ are COPYed by the Dockerfile.
+
+# Version control
+.git
+.gitignore
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Packaging / build artifacts
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Secrets & local environment config
+.env
+.env.*
+!.env.example
+secrets/
+.streamlit/secrets.toml
+
+# Local data and runtime artifacts (prod reads from GCS)
+data/
+**/.duckdb/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+
+# Tests and generated plots (not needed at runtime)
+tests/
+overlap_*.png
