@@ -1,0 +1,23 @@
+metrics:
+  econ_impact_5yr:
+    display_name: "Economic impact to utility over 5 years"
+    kind: scalar
+    unit: USD
+    value_format: "${:,.0f}"
+  total_econ_impact:
+    display_name: "Total estimated economic impact from fire"
+    kind: scalar
+    unit: USD
+    value_format: "${:,.0f}"
+  sediment_yield_increase:
+    display_name: "Increase in sediment yield"
+    kind: raster
+    unit: "tonnes/km^2/yr"
+    default_colormap: ylorbr
+    default_rescale: [0, 100]
+  turbidity_increase:
+    display_name: "Increase in turbidity"
+    kind: raster
+    unit: "NTU"
+    default_colormap: ylorbr
+    default_rescale: [0, 50]

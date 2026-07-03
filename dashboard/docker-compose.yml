@@ -1,0 +1,50 @@
+services:
+  tiler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      sh -c "python scripts/bootstrap_sample_data.py &&
+      uvicorn core.tiler.main:app --host 0.0.0.0 --port 8000"
+    env_file:
+      - .env
+    environment:
+      EMBER_STORAGE_BACKEND: ${EMBER_STORAGE_BACKEND:-local}
+      EMBER_DATA_ROOT: /app/data
+      TILER_URL: http://localhost:8000
+      CORS_ORIGINS: http://localhost:8501
+      GDAL_DISABLE_READDIR_ON_OPEN: EMPTY_DIR
+      CPL_VSIL_CURL_ALLOWED_EXTENSIONS: .tif,.TIF,.tiff
+      GDAL_HTTP_MULTIPLEX: "YES"
+      GDAL_HTTP_VERSION: "2"
+      VSI_CACHE: "TRUE"
+      GDAL_CACHEMAX: "200"
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/secrets:ro
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      sh -c "python scripts/bootstrap_sample_data.py &&
+      streamlit run core/app/streamlit_app.py --server.port 8501 --server.address 0.0.0.0"
+    env_file:
+      - .env
+    environment:
+      EMBER_STORAGE_BACKEND: ${EMBER_STORAGE_BACKEND:-local}
+      EMBER_DATA_ROOT: /app/data
+      TILER_URL: http://tiler:8000
+      CORS_ORIGINS: http://localhost:8501
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    ports:
+      - "8501:8501"
+    depends_on:
+      - tiler
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/secrets:ro
