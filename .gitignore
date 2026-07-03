@@ -1,0 +1,40 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Packaging / build artifacts (created by `pip install -e .`, builds, etc.)
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+
+# Secrets & local environment config (never share these)
+.env
+.env.*
+!.env.example
+**/secrets/
+.streamlit/secrets.toml
+
+# Local data and runtime artifacts (regenerated; not needed to run the app)
+data/
+**/.duckdb/
+
+# Generated plots from scripts/plot_overlap_over_time.py
+overlap_*.png
