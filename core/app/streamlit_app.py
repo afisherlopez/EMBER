@@ -7,12 +7,12 @@ import sys
 from pathlib import Path
 
 # `streamlit run core/app/streamlit_app.py` puts this file's directory on sys.path rather
-# than the project root, which breaks the absolute `core.*` imports below. Add the dashboard
-# root (three parents up: app -> core -> dashboard) so the app runs without PYTHONPATH or an
-# editable install.
-_DASHBOARD_ROOT = Path(__file__).resolve().parents[2]
-if str(_DASHBOARD_ROOT) not in sys.path:
-    sys.path.insert(0, str(_DASHBOARD_ROOT))
+# than the project root, which breaks the absolute `core.*` imports below. Add the project
+# root (three parents up: app -> core -> project root) so the app runs without PYTHONPATH or
+# an editable install.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 # macOS python.org builds ship without CA certificates wired into OpenSSL, which makes the
 # HTTPS calls gcsfs sends to storage.googleapis.com fail with CERTIFICATE_VERIFY_FAILED.

@@ -8,7 +8,7 @@ Every year in the range is kept on the x-axis. Years with no intersecting fire (
 overlap) are shown as a zero-height bar rather than being dropped, so gaps read as "no
 overlap that year" instead of vanishing from the axis.
 
-Run from the ``dashboard/`` directory so ``core`` is importable, e.g.::
+Run from the repository root so ``core`` is importable, e.g.::
 
     python -m scripts.plot_overlap_over_time --utility-name "salem"
     python -m scripts.plot_overlap_over_time --utility-id or4100257 --year-min 1990
