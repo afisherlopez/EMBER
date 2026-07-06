@@ -8,25 +8,45 @@ This guide walks you through running EMBER on your own device (for now, assuming
 
 Everything below happens in an app called **Terminal**. Don't worry if you've never used it, you'll just paste in commands one at a time.
 
-### What you need first: Python
+### What you need first: Python and Git
 
-EMBER needs a program called **Python** (version 3.11 or 3.12). To check whether you already have it:
+EMBER needs two free tools: **Python** (to run the app) and **Git** (to copy the code onto your computer). Let's check for each — you may already have them.
 
-1. Open the **Terminal** app on your laptop (press `Cmd` + `Space`, type `Terminal`, press `Return`).
-2. Copy the line below, paste it into Terminal (`Cmd` + `V`), and press `Return`:
+**1. Check Python** (version 3.11 or 3.12). Open the **Terminal** app (press `Cmd` + `Space`, type `Terminal`, press `Return`), then copy the line below, paste it in (`Cmd` + `V`), and press `Return`:
 
-   ```bash
-   python3 --version
-   ```
+```bash
+python3 --version
+```
 
-- If you see `Python 3.11.x` or `Python 3.12.x`, you're all set — skip to [Step 1](#step-1-go-to-the-ember-folder).
+- If you see `Python 3.11.x` or `Python 3.12.x`, you're set.
 - If you see `Python 3.13` or higher, or a "command not found" error, install Python **3.12** from [python.org/downloads/release/python-3128](https://www.python.org/downloads/release/python-3128/). Run the installer, then close and reopen Terminal.
+
+**2. Check Git.** In the same Terminal window, run:
+
+```bash
+git --version
+```
+
+- If you see something like `git version 2.39.x`, you're set.
+- If a small window pops up offering to install "command line developer tools," click **Install** and wait a few minutes — that includes Git. When it finishes, run `git --version` again to confirm.
 
 > **How to run any command below:** copy it, click in the Terminal window, paste, and press `Return`. Do them one at a time, and wait for each to finish.
 
-### Step 1: Go to the EMBER folder
+### Step 1: Copy EMBER onto your computer
 
-Terminal needs to know which folder your EMBER files are in. The easiest way:
+Right now the EMBER code lives online. This command copies it onto your computer, into a new folder called **EMBER** in your home folder. You only do this once.
+
+Paste this into Terminal and press `Return`:
+
+```bash
+git clone https://github.com/afisherlopez/EMBER.git
+```
+
+It prints a few lines as it downloads, then returns you to the prompt. The code is now on your device.
+
+### Step 2: Go to the EMBER folder
+
+Terminal needs to be "inside" the EMBER folder you just downloaded. The easiest way:
 
 1. Type `cd` followed by a **single space** (don't press Return yet):
 
@@ -34,12 +54,12 @@ Terminal needs to know which folder your EMBER files are in. The easiest way:
    cd 
    ```
 
-2. Open **Finder**, find the **EMBER** folder, and **drag it onto the Terminal window**. Terminal fills in the folder's location for you.
+2. Open **Finder**, go to your home folder, find the **EMBER** folder, and **drag it onto the Terminal window**. Terminal fills in the folder's location for you.
 3. Now press `Return`.
 
 Your Terminal prompt now shows you're inside the EMBER folder.
 
-### Step 2: Create a virtual environment (one time only)
+### Step 3: Create a virtual environment (one time only)
 
 A "virtual environment" is a private, self-contained space for EMBER's building blocks, so it won't interfere with anything else on your computer. Create it once:
 
@@ -47,9 +67,9 @@ A "virtual environment" is a private, self-contained space for EMBER's building 
 python3 -m venv ember-venv
 ```
 
-This takes a few seconds and creates a hidden `.venv` folder. You won't need to do this again.
+This takes a few seconds and creates an `ember-venv` folder. You won't need to do this again.
 
-### Step 3: Turn on the virtual environment
+### Step 4: Turn on the virtual environment
 
 Do this **every time** you open a new Terminal to work on EMBER:
 
@@ -59,7 +79,7 @@ source ember-venv/bin/activate
 
 You'll know it worked because your prompt now starts with `(ember-venv)`.
 
-### Step 4: Install what EMBER needs (one time only)
+### Step 5: Install what EMBER needs (one time only)
 
 This downloads all the building blocks EMBER uses. It may take a few minutes the first time — that's normal.
 
@@ -69,7 +89,7 @@ pip install -r requirements.txt
 
 Wait until it finishes and you get your prompt back. You only need to do this once.
 
-### Step 5: Start the app
+### Step 6: Start the app
 
 ```bash
 bash scripts/run_local.sh
@@ -85,7 +105,7 @@ http://localhost:8501
 
 That's it — you're running EMBER! 🎉
 
-### Step 6: Stop the app
+### Step 7: Stop the app
 
 When you're done, click on the Terminal window and press `Control` + `C`. This shuts everything down cleanly.
 
@@ -93,9 +113,9 @@ When you're done, click on the Terminal window and press `Control` + `C`. This s
 
 ## Running it again later
 
-Once you've done the one-time setup above, starting EMBER again is quick. Open Terminal and:
+Once you've done the one-time setup above, starting EMBER again is quick (no need to download it again). Open Terminal and:
 
-1. Type `cd ` and drag the EMBER folder onto Terminal, then press `Return` (like [Step 1](#step-1-go-to-the-ember-folder)).
+1. Type `cd ` and drag the EMBER folder onto Terminal, then press `Return` (like [Step 2](#step-2-go-to-the-ember-folder)).
 2. Run these two lines:
 
    ```bash
@@ -105,9 +125,10 @@ Once you've done the one-time setup above, starting EMBER again is quick. Open T
 
 ## If something goes wrong
 
-- **`command not found: python3`** — Python isn't installed. See [What you need first: Python](#what-you-need-first-python).
-- **Your prompt doesn't show `(ember-venv)`** — run `source ember-venv/bin/activate` again (Step 3). Every command must be run with the environment turned on.
-- **`No such file or directory`** — you're probably not in the EMBER folder. Redo [Step 1](#step-1-go-to-the-ember-folder).
+- **`command not found: python3`** — Python isn't installed. See [What you need first: Python and Git](#what-you-need-first-python-and-git).
+- **`command not found: git`** — Git isn't installed. See [What you need first: Python and Git](#what-you-need-first-python-and-git).
+- **Your prompt doesn't show `(ember-venv)`** — run `source ember-venv/bin/activate` again (Step 4). Every command must be run with the environment turned on.
+- **`No such file or directory`** — you're probably not in the EMBER folder. Redo [Step 2](#step-2-go-to-the-ember-folder).
 - **The browser page won't load** — give it a few more seconds, then refresh `http://localhost:8501`. Make sure the Terminal window is still running (you didn't press `Control` + `C`).
 - **Still stuck?** Close Terminal completely, reopen it, and start again from [Running it again later](#running-it-again-later).
 
