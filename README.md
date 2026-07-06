@@ -1,20 +1,18 @@
 # EMBER
 
-EMBER is a dashboard for exploring how wildfires affect the water supplies of utilities. For a chosen fire and water utility, it shows where they overlap on a map, along with the related impact information.
-
-This guide walks you through running EMBER on your own Mac, step by step. **No prior terminal experience needed** — just follow along and copy-paste each command. There's a [For developers](#for-developers) section at the bottom for people who want the technical details.
+This guide walks you through running EMBER on your own device (for now, assuming Mac), step by step. **No prior terminal experience needed** — just follow along and copy-paste each command. There's a [for developers](#for-developers) section at the bottom for those who want more technical details.
 
 ---
 
 ## Run EMBER on your computer
 
-Everything below happens in an app called **Terminal**. Don't worry if you've never used it — you'll just paste in commands one at a time.
+Everything below happens in an app called **Terminal**. Don't worry if you've never used it, you'll just paste in commands one at a time.
 
 ### What you need first: Python
 
 EMBER needs a program called **Python** (version 3.11 or 3.12). To check whether you already have it:
 
-1. Open **Terminal** (press `Cmd` + `Space`, type `Terminal`, press `Return`).
+1. Open the **Terminal** app on your laptop (press `Cmd` + `Space`, type `Terminal`, press `Return`).
 2. Copy the line below, paste it into Terminal (`Cmd` + `V`), and press `Return`:
 
    ```bash
@@ -24,7 +22,7 @@ EMBER needs a program called **Python** (version 3.11 or 3.12). To check whether
 - If you see `Python 3.11.x` or `Python 3.12.x`, you're all set — skip to [Step 1](#step-1-go-to-the-ember-folder).
 - If you see `Python 3.13` or higher, or a "command not found" error, install Python **3.12** from [python.org/downloads/release/python-3128](https://www.python.org/downloads/release/python-3128/). Run the installer, then close and reopen Terminal.
 
-> **How to run any command below:** copy it, click in the Terminal window, paste (`Cmd` + `V`), and press `Return`. Do them one at a time, and wait for each to finish.
+> **How to run any command below:** copy it, click in the Terminal window, paste, and press `Return`. Do them one at a time, and wait for each to finish.
 
 ### Step 1: Go to the EMBER folder
 
@@ -46,7 +44,7 @@ Your Terminal prompt now shows you're inside the EMBER folder.
 A "virtual environment" is a private, self-contained space for EMBER's building blocks, so it won't interfere with anything else on your computer. Create it once:
 
 ```bash
-python3 -m venv .venv
+python3 -m venv ember-venv
 ```
 
 This takes a few seconds and creates a hidden `.venv` folder. You won't need to do this again.
@@ -56,10 +54,10 @@ This takes a few seconds and creates a hidden `.venv` folder. You won't need to 
 Do this **every time** you open a new Terminal to work on EMBER:
 
 ```bash
-source .venv/bin/activate
+source ember-venv/bin/activate
 ```
 
-You'll know it worked because your prompt now starts with `(.venv)`.
+You'll know it worked because your prompt now starts with `(ember-venv)`.
 
 ### Step 4: Install what EMBER needs (one time only)
 
@@ -101,14 +99,14 @@ Once you've done the one-time setup above, starting EMBER again is quick. Open T
 2. Run these two lines:
 
    ```bash
-   source .venv/bin/activate
+   source ember-venv/bin/activate
    bash scripts/run_local.sh
    ```
 
 ## If something goes wrong
 
 - **`command not found: python3`** — Python isn't installed. See [What you need first: Python](#what-you-need-first-python).
-- **Your prompt doesn't show `(.venv)`** — run `source .venv/bin/activate` again (Step 3). Every command must be run with the environment turned on.
+- **Your prompt doesn't show `(ember-venv)`** — run `source ember-venv/bin/activate` again (Step 3). Every command must be run with the environment turned on.
 - **`No such file or directory`** — you're probably not in the EMBER folder. Redo [Step 1](#step-1-go-to-the-ember-folder).
 - **The browser page won't load** — give it a few more seconds, then refresh `http://localhost:8501`. Make sure the Terminal window is still running (you didn't press `Control` + `C`).
 - **Still stuck?** Close Terminal completely, reopen it, and start again from [Running it again later](#running-it-again-later).
@@ -118,7 +116,7 @@ Once you've done the one-time setup above, starting EMBER again is quick. Open T
 
 ## For developers
 
-EMBER is a read-only Streamlit dashboard over precomputed assets (Parquet + Cloud-Optimized GeoTIFFs), with dynamic raster tiles served by TiTiler. `scripts/run_local.sh` (used above) just wires the two processes together against the bundled sample data.
+EMBER is a read-only Streamlit dashboard over precalculated assets (Parquet and GeoTIFFs), with dynamic raster tiles served by TiTiler. `scripts/run_local.sh` (used above) wires the two processes together against the bundled sample data.
 
 ### Architecture
 
