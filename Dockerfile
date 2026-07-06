@@ -6,13 +6,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Install runtime dependencies first, from requirements.txt (the single source of
+# truth), so this layer is cached and only rebuilds when dependencies change.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
+
+# Then copy the app and install it as a package WITHOUT re-resolving dependencies
+# (they are already installed above). Editing app code only re-runs this fast step.
 COPY pyproject.toml README.md ./
 COPY core ./core
 COPY config ./config
 COPY scripts ./scripts
 COPY docs ./docs
-
-RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir .
+RUN pip install --no-cache-dir --no-deps .
 
 # GDAL/COG read tuning (previously set in docker-compose.yml) baked into the image
 # so it applies wherever the container runs, including Cloud Run.
