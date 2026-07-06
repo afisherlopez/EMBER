@@ -48,10 +48,14 @@ def _load_secrets() -> Any | None:
     except Exception:  # noqa: BLE001 - streamlit may be absent in non-app contexts
         return None
     try:
-        secrets = st.secrets
-        # Force a lookup so a missing secrets file raises here and is caught.
-        _SERVICE_ACCOUNT_KEY in secrets  # noqa: B015 - membership check triggers parse
-        return secrets
+        # Probe for a secrets.toml without touching st.secrets directly: accessing
+        # st.secrets when no file exists renders a "No secrets found" st.error element,
+        # which would run before set_page_config and break the app. load_if_toml_exists()
+        # returns False (rendering nothing) locally, and True on Streamlit Cloud where the
+        # pasted secrets are materialized to a secrets.toml.
+        if not st.secrets.load_if_toml_exists():
+            return None
+        return st.secrets
     except Exception:  # noqa: BLE001 - no secrets configured is the normal local case
         return None
 

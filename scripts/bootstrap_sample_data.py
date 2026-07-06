@@ -48,9 +48,9 @@ def bootstrap_sample_data(data_root: Path) -> None:
     _write_sample_raster(sediment_path, value_scale=1.0)
     _write_sample_raster(turbidity_path, value_scale=0.35)
 
-    if (tables_dir / "utilities.parquet").exists() and (tables_dir / "wildfires.parquet").exists():
-        return
-
+    # Always (re)write the sample tables so the absolute `cog_uri` paths in raster_assets
+    # track the current checkout location. A stale early-return guard here would leave a
+    # previously generated parquet pointing at an old path, breaking local raster tiles.
     conn = duckdb.connect(database=":memory:")
     duckdb_home = (data_root / ".duckdb").resolve()
     duckdb_home.mkdir(parents=True, exist_ok=True)

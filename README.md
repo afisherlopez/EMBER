@@ -33,19 +33,34 @@ The app only performs lookup and visualization over precomputed assets (Parquet 
 ## Run Locally
 
 EMBER runs as two processes: the TiTiler tiler and the Streamlit app. With your
-Python environment active (e.g. a conda env):
+Python environment active (e.g. a conda env) and dependencies installed
+(`pip install -e .`):
 
 1. Copy env template:
    - `cp .env.example .env`
-2. Create the local sample dataset (no cloud credentials needed):
-   - `python scripts/bootstrap_sample_data.py`
-3. In one terminal, start the tiler:
-   - `uvicorn core.tiler.main:app --host 0.0.0.0 --port 8000`
-4. In a second terminal, start the app (pointing it at the tiler):
-   - `TILER_URL=http://localhost:8000 streamlit run core/app/streamlit_app.py --server.port 8501`
-5. Open:
+2. Start both processes with one command:
+   - `./scripts/run_local.sh`
+3. Open:
    - App: `http://localhost:8501`
    - Tiler health: `http://localhost:8000/healthz`
+
+`run_local.sh` regenerates the bundled sample dataset (no cloud credentials
+needed), starts the tiler in the background, waits for its health check, then
+runs the app in the foreground. Stopping the app (Ctrl-C) also stops the tiler.
+Override ports with `APP_PORT` / `TILER_PORT`.
+
+To preview the **real GCS data** locally instead of the sample, set the GCS
+values in `./.env` (see below) before running the script; the reader service
+account must have read access to the bucket.
+
+<details>
+<summary>Manual two-terminal alternative</summary>
+
+1. `python scripts/bootstrap_sample_data.py`
+2. Terminal 1 — tiler: `uvicorn core.tiler.main:app --host 0.0.0.0 --port 8000`
+3. Terminal 2 — app: `TILER_URL=http://localhost:8000 streamlit run core/app/streamlit_app.py --server.port 8501`
+
+</details>
 
 ## GCS Setup (Where to put credentials)
 
@@ -88,6 +103,27 @@ GCS_BUCKET=my-bucket \
 SERVICE_ACCOUNT=ember-sa@my-project.iam.gserviceaccount.com \
 ./scripts/deploy_cloudrun.sh
 ```
+
+For this project specifically (data in `gs://data_main_gcs/EMBER`), the runtime
+uses the read-only `ember-reader` service account, which must first be granted
+read access to the bucket:
+
+```bash
+gcloud storage buckets add-iam-policy-binding gs://data_main_gcs \
+  --member="serviceAccount:ember-reader@data-gcp-main.iam.gserviceaccount.com" \
+  --role="roles/storage.objectViewer" --project=data-gcp-main
+
+PROJECT_ID=data-gcp-main \
+GCS_BUCKET=data_main_gcs \
+GCS_PREFIX=EMBER \
+SERVICE_ACCOUNT=ember-reader@data-gcp-main.iam.gserviceaccount.com \
+./scripts/deploy_cloudrun.sh
+```
+
+On Cloud Run the service-account key file is never used: the `ember-reader`
+account is attached to each service and all readers authenticate through
+Application Default Credentials. The public app and tiler read the bucket
+server-side; the bucket itself stays private.
 
 Optional overrides: `REGION` (default `us-central1`), `REPO`, `GCS_PREFIX`,
 `TILER_SERVICE`, `APP_SERVICE`, `IMAGE_TAG`. The script prints the final App and
