@@ -107,13 +107,13 @@ That's it — you're running EMBER! 🎉
 
 ### Step 7: Stop the app
 
-When you're done, click on the Terminal window and press `Control` + `C`. This shuts everything down cleanly.
+When you're done, click on the Terminal window and press `Control` + `C`. This will stop the run.
 
 ---
 
 ## Running it again later
 
-Once you've done the one-time setup above, starting EMBER again is quick (no need to download it again). Open Terminal and:
+Once you've done the one-time setup above, starting EMBER again is quick. Open Terminal and:
 
 1. Type `cd ` and drag the EMBER folder onto Terminal, then press `Return` (like [Step 2](#step-2-go-to-the-ember-folder)).
 2. Run these two lines:
@@ -123,13 +123,71 @@ Once you've done the one-time setup above, starting EMBER again is quick (no nee
    bash scripts/run_local.sh
    ```
 
-## If something goes wrong
+## Using the real data (instead of the sample)
+
+By default EMBER runs on a small built-in **sample** dataset, so anyone can try it with no accounts or passwords. If you have access to the GCS bucket with the EMBER data, you can instead run it against the **real data** in the cloud. You sign in with your own Blue Forest Google account.
+
+> Before you start, ask whoever manages EMBER to confirm your Google account has read access to the data. Without that, the steps below will run but the app won't be able to load anything.
+
+This is a one-time setup. Do it with your EMBER virtual environment (ember-venv) turned on (Steps 2–4 of the main guide).
+
+### 1. Install the Google Cloud CLI (one time)
+
+This is a free tool from Google that lets your computer sign in to Google Cloud. Paste this into Terminal and follow the prompts (press `Return` to accept the defaults, and say **yes** if it offers to update your PATH):
+
+```bash
+curl https://sdk.cloud.google.com | bash
+```
+
+Then **close and reopen Terminal** so it sees the new tool. (If the command above doesn't work, use the installer at [cloud.google.com/sdk/docs/install-sdk](https://cloud.google.com/sdk/docs/install-sdk#mac).) Confirm it installed:
+
+```bash
+gcloud --version
+```
+
+You should see version numbers rather than `command not found`.
+
+### 2. Sign in with your Google account (one time)
+
+```bash
+gcloud auth application-default login
+```
+
+This opens your web browser. Sign in with your Blue Forest account. When the page says you're authenticated, you can close that tab. Your computer will now use this sign-in automatically.
+
+### 3. Tell EMBER to use the real data
+
+Go to the EMBER folder (`cd ` + drag it onto Terminal, like [Step 2](#step-2-go-to-the-ember-folder)), then paste this exactly to create a small file where the settings for your GCS information will be stored:
+
+```bash
+cat > .env <<'EOF'
+EMBER_STORAGE_BACKEND=gcs
+GCS_BUCKET=data_main_gcs
+GCS_PREFIX=EMBER
+EOF
+```
+
+That's it for setup — your sign-in from Step 2 handles the permissions, so there are no keys or passwords in this file.
+
+### 4. Start the app
+
+```bash
+source ember-venv/bin/activate
+bash scripts/run_local.sh
+```
+
+EMBER now loads the live data from the cloud instead of the sample. The app only **displays** the data — it never changes anything in the cloud.
+
+## Troubleshooting
 
 - **`command not found: python3`** — Python isn't installed. See [What you need first: Python and Git](#what-you-need-first-python-and-git).
 - **`command not found: git`** — Git isn't installed. See [What you need first: Python and Git](#what-you-need-first-python-and-git).
 - **Your prompt doesn't show `(ember-venv)`** — run `source ember-venv/bin/activate` again (Step 4). Every command must be run with the environment turned on.
 - **`No such file or directory`** — you're probably not in the EMBER folder. Redo [Step 2](#step-2-go-to-the-ember-folder).
 - **The browser page won't load** — give it a few more seconds, then refresh `http://localhost:8501`. Make sure the Terminal window is still running (you didn't press `Control` + `C`).
+- **`command not found: gcloud`** (real-data setup) — the Google Cloud CLI isn't installed or Terminal wasn't reopened after installing it. See [step 1 of "Using the real data"](#1-install-the-google-cloud-cli-one-time).
+- **A "permission denied" or "403" error when loading the real data** — your Google account hasn't been given access to the EMBER data yet. Ask whoever manages EMBER to grant it, then try again.
+- **The app loads but data looks empty (real data)** — make sure you ran `gcloud auth application-default login` (Step 2) and that your `.env` file exists in the EMBER folder. To go back to the guaranteed-working sample, run `rm .env` and restart.
 - **Still stuck?** Close Terminal completely, reopen it, and start again from [Running it again later](#running-it-again-later).
 
 ---
@@ -215,9 +273,9 @@ SERVICE_ACCOUNT=ember-reader@data-gcp-main.iam.gserviceaccount.com \
 ./scripts/deploy_cloudrun.sh
 ```
 
-Optional overrides: `REGION` (default `us-central1`), `REPO`, `TILER_SERVICE`, `APP_SERVICE`, `IMAGE_TAG`. The public app and tiler read the bucket server-side; the bucket itself stays private.
+Optional arguments: `REGION` (default `us-central1`), `REPO`, `TILER_SERVICE`, `APP_SERVICE`, `IMAGE_TAG`. The public app and tiler read the bucket server-side; the bucket itself stays private.
 
-**Public access:** the script requests `--allow-unauthenticated`, but setting that binding needs `run.services.setIamPolicy` (`roles/run.admin` or Owner) — `roles/editor` can deploy but cannot open a service to the public. To make the services reachable without a Google identity token, an Owner runs:
+**Public access:** the script requests `--allow-unauthenticated`, but setting that binding needs `run.services.setIamPolicy` (`roles/run.admin` or Owner) — `roles/editor` can deploy but cannot open a service to the public. To make the services reachable without a Google identity token, an Owner (Jillian or Gregg) needs to run:
 
 ```bash
 gcloud run services add-iam-policy-binding ember-app   --region=us-central1 --member=allUsers --role=roles/run.invoker --project=data-gcp-main
