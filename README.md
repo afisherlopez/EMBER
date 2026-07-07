@@ -4,7 +4,7 @@ This guide walks you through running EMBER on your own device (for now, assuming
 
 ---
 
-## Run EMBER on your computer
+## Run EMBER on your computer (to start, we'll test the setup using a version of EMBER which just has sample data)
 
 Everything below happens in an app called **Terminal**. Don't worry if you've never used it, you'll just paste in commands one at a time.
 
@@ -79,7 +79,7 @@ source ember-venv/bin/activate
 
 You'll know it worked because your prompt now starts with `(ember-venv)`.
 
-### Step 5: Install what EMBER needs (one time only)
+### Step 5: Install the packages that EMBER needs (one time only)
 
 This downloads all the building blocks EMBER uses. It may take a few minutes the first time — that's normal.
 
@@ -89,13 +89,50 @@ pip install -r requirements.txt
 
 Wait until it finishes and you get your prompt back. You only need to do this once.
 
-### Step 6: Start the app
+### Step 6: Install the Google Cloud CLI (one time)
+
+This is a free tool from Google that lets your computer sign in to Google Cloud so that you can access the spatial data in GCS. Say **yes** if it offers to update your PATH:
+
+```bash
+curl https://sdk.cloud.google.com | bash
+```
+
+Then **close and reopen Terminal** so it sees the new tool. (If the command above doesn't work, use the installer at [cloud.google.com/sdk/docs/install-sdk](https://cloud.google.com/sdk/docs/install-sdk#mac).) Activate your virtual environment again, then confirm it installed:
+
+```bash
+source ember-venv/bin/activate
+gcloud --version
+```
+
+You should see version numbers rather than `command not found`.
+
+### Step 7: Sign in with your Google account (one time)
+
+```bash
+gcloud auth application-default login
+```
+
+This opens your web browser. Sign in with your Blue Forest account. When the page says you're authenticated, you can close that tab. Your computer will now use this sign-in automatically.
+
+### Step 8: Tell EMBER to use the GCS data
+
+Go to the EMBER folder (`cd ` + drag it onto Terminal, like [Step 2](#step-2-go-to-the-ember-folder)), then paste this exactly to create a small file where the settings for your GCS information will be stored:
+
+```bash
+cat > .env <<'EOF'
+EMBER_STORAGE_BACKEND=gcs
+GCS_BUCKET=data_main_gcs
+GCS_PREFIX=EMBER
+EOF
+```
+
+That's it for setup — your sign-in from Step 2 handles the permissions, so there are no keys or passwords in this file.
+
+### Step 9: Start the app
 
 ```bash
 bash scripts/run_local.sh
 ```
-
-The first time, this sets up a small built-in sample dataset (so you don't need any passwords or accounts), then starts the app. After a few seconds, EMBER should **open automatically in your web browser**.
 
 If it doesn't open on its own, open your browser and go to:
 
@@ -103,9 +140,9 @@ If it doesn't open on its own, open your browser and go to:
 http://localhost:8501
 ```
 
-That's it — you're running EMBER! 🎉
+That's it — you're running EMBER! 🎉  
 
-### Step 7: Stop the app
+### Step 10: Stop the app
 
 When you're done, click on the Terminal window and press `Control` + `C`. This will stop the run.
 
@@ -122,61 +159,6 @@ Once you've done the one-time setup above, starting EMBER again is quick. Open T
    source ember-venv/bin/activate
    bash scripts/run_local.sh
    ```
-
-## Using the real data (instead of the sample)
-
-By default EMBER runs on a small built-in **sample** dataset, so anyone can try it with no accounts or passwords. If you have access to the GCS bucket with the EMBER data, you can instead run it against the **real data** in the cloud. You sign in with your own Blue Forest Google account.
-
-> Before you start, ask whoever manages EMBER to confirm your Google account has read access to the data. Without that, the steps below will run but the app won't be able to load anything.
-
-This is a one-time setup. Do it with your EMBER virtual environment (ember-venv) turned on (Steps 2–4 of the main guide).
-
-### 1. Install the Google Cloud CLI (one time)
-
-This is a free tool from Google that lets your computer sign in to Google Cloud. Paste this into Terminal and follow the prompts (press `Return` to accept the defaults, and say **yes** if it offers to update your PATH):
-
-```bash
-curl https://sdk.cloud.google.com | bash
-```
-
-Then **close and reopen Terminal** so it sees the new tool. (If the command above doesn't work, use the installer at [cloud.google.com/sdk/docs/install-sdk](https://cloud.google.com/sdk/docs/install-sdk#mac).) Confirm it installed:
-
-```bash
-gcloud --version
-```
-
-You should see version numbers rather than `command not found`.
-
-### 2. Sign in with your Google account (one time)
-
-```bash
-gcloud auth application-default login
-```
-
-This opens your web browser. Sign in with your Blue Forest account. When the page says you're authenticated, you can close that tab. Your computer will now use this sign-in automatically.
-
-### 3. Tell EMBER to use the real data
-
-Go to the EMBER folder (`cd ` + drag it onto Terminal, like [Step 2](#step-2-go-to-the-ember-folder)), then paste this exactly to create a small file where the settings for your GCS information will be stored:
-
-```bash
-cat > .env <<'EOF'
-EMBER_STORAGE_BACKEND=gcs
-GCS_BUCKET=data_main_gcs
-GCS_PREFIX=EMBER
-EOF
-```
-
-That's it for setup — your sign-in from Step 2 handles the permissions, so there are no keys or passwords in this file.
-
-### 4. Start the app
-
-```bash
-source ember-venv/bin/activate
-bash scripts/run_local.sh
-```
-
-EMBER now loads the live data from the cloud instead of the sample. The app only **displays** the data — it never changes anything in the cloud.
 
 ## Troubleshooting
 
