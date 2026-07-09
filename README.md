@@ -4,7 +4,7 @@ This guide walks you through running EMBER on your own device (for now, assuming
 
 ---
 
-## Run EMBER on your computer (to start, we'll test the setup using a version of EMBER which just has sample data)
+## Run EMBER on your computer 
 
 Everything below happens in an app called **Terminal**. Don't worry if you've never used it, you'll just paste in commands one at a time.
 
