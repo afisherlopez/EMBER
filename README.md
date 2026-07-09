@@ -1,6 +1,6 @@
 # EMBER
 
-This guide walks you through running EMBER on your own device (for now, assuming Mac), step by step. **No prior terminal experience needed** — just follow along and copy-paste each command. There's a [for developers](#for-developers) section at the bottom for those who want more technical details.
+This guide walks you through running EMBER on your own device (for now, assuming you are a Blue Forest employee and have a Mac), step by step. **No prior terminal experience needed** — just follow along and copy-paste each command. There's a [for developers](#for-developers) section at the bottom for those who want more technical details.
 
 ---
 
