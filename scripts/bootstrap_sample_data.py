@@ -140,10 +140,7 @@ def bootstrap_sample_data(data_root: Path) -> None:
         CREATE TABLE scalar_metrics AS
         SELECT * FROM (
             VALUES
-                ('denver-water', 'hayman-2002', 'econ_impact_5yr', 25000000.0, 'USD', 'model-v1', 'sample estimate', DATE '2026-01-01'),
                 ('denver-water', 'hayman-2002', 'total_econ_impact', 68000000.0, 'USD', 'model-v1', 'sample estimate', DATE '2026-01-01'),
-                ('denver-water', 'camp-2018', 'econ_impact_5yr', NULL, 'USD', 'model-v1', 'pending metric', DATE '2026-01-01'),
-                ('foothills-utility', 'camp-2018', 'econ_impact_5yr', 12000000.0, 'USD', 'model-v1', 'sample estimate', DATE '2026-01-01'),
                 ('foothills-utility', 'camp-2018', 'total_econ_impact', 33000000.0, 'USD', 'model-v1', 'sample estimate', DATE '2026-01-01')
         ) AS t(utility_id, wildfire_id, metric_key, value, unit, method, source_note, as_of_date)
         """

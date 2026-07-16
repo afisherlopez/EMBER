@@ -1,16 +1,16 @@
 profiles:
   water_utility:
     label: "a water utility owner, employee, or partner"
-    features: [econ_impact_5yr, sediment_yield_increase]
+    features: [total_econ_impact, sediment_yield_increase]
   project_development:
     label: "a Project Development team member"
-    features: [econ_impact_5yr, total_econ_impact]
+    features: [total_econ_impact]
   science:
     label: "a Science team member"
     features: [sediment_yield_increase, turbidity_increase]
   finance:
     label: "a Finance team member"
-    features: [econ_impact_5yr, total_econ_impact]
+    features: [total_econ_impact]
   external_affairs:
     label: "an External Affairs team member"
-    features: [econ_impact_5yr, total_econ_impact]
+    features: [total_econ_impact]

@@ -125,14 +125,23 @@ def render_fire_view(catalog: Catalog, wildfires) -> None:
         st.warning(f"No water utility source areas overlapped {summary.name}.")
         return
 
+    utility_states = sorted({utility.state for utility in utilities})
+    utility_state_filter = st.selectbox("Utility state filter", ["All"] + utility_states, index=0)
+    filtered_utilities = utilities
+    if utility_state_filter != "All":
+        filtered_utilities = [utility for utility in utilities if utility.state == utility_state_filter]
+    if not filtered_utilities:
+        st.warning(f"No {utility_state_filter} water utility source areas overlapped {summary.name}.")
+        return
+
     st.markdown(
-        f"**{len(utilities)}** water utility source area(s) overlapped **{summary.name}**."
+        f"**{len(filtered_utilities)}** water utility source area(s) overlapped **{summary.name}**."
     )
 
     fire_geojson = catalog.get_geojson("wildfires", wildfire_id, simplify_tolerance=0.0)
     map_col, table_col = st.columns([3, 2], gap="large")
     with map_col:
-        _render_map(fire_geojson, utilities)
+        _render_map(fire_geojson, filtered_utilities)
     with table_col:
         st.dataframe(
             [
@@ -155,7 +164,7 @@ def render_fire_view(catalog: Catalog, wildfires) -> None:
                         else None
                     ),
                 }
-                for utility in utilities
+                for utility in filtered_utilities
             ],
             use_container_width=True,
             hide_index=True,

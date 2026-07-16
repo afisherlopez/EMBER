@@ -34,6 +34,7 @@ from core.gcp_auth import bootstrap_gcp_credentials
 
 bootstrap_gcp_credentials()
 
+from core.app.admin_view import admin_password_is_configured, admin_password_matches, render_admin_view
 from core.app.export import build_export_html, render_export_button
 from core.app.features import format_scalar_value, render_feature_panel
 from core.app.fire_view import render_fire_view
@@ -98,6 +99,110 @@ def _first_raster_metric(profile_metrics: list[MetricDefinition]) -> MetricDefin
     return None
 
 
+DEMO_TOTAL_ECON_IMPACT = 22_146_000.0
+DEMO_TOTAL_ECON_IMPACT_HELPER = (
+    "This number was calculated using sources of supply (SoS) costs, which is "
+    "the amount of money a water utility spends on maintaining their water supply. "
+    "To find the economic impact of the Holiday Farm Fire on the Eugene Water & "
+    "Electric Board, we took the difference between the baseline SoS from 2019 and "
+    "the SoS costs for 2020 - 2025, which were the years following the fire."
+)
+BREITENBUSH_TOTAL_ECON_IMPACT_HELPER = (
+    "This number was calculated using sources of supply (SoS) costs, which is "
+    "the amount of money a water utility spends on maintaining their water supply. "
+    "For this Breitenbush case study, we compare the baseline SoS costs before "
+    "the fire with the SoS costs in the years following the fire."
+)
+
+
+def _is_holiday_farm_eweb_case_study(utility: Utility, wildfire: Wildfire) -> bool:
+    """Temporary demo match until the case-study value is published in scalar_metrics."""
+    utility_text = f"{utility.name} {utility.source_area_name}".lower()
+    wildfire_text = wildfire.name.lower()
+    is_eweb = "eweb" in utility_text or ("eugene" in utility_text and "electric" in utility_text)
+    return is_eweb and "holiday farm" in wildfire_text
+
+
+def _is_breitenbush_case_study(utility: Utility, wildfire: Wildfire) -> bool:
+    """Match the Breitenbush demo case by selected utility or wildfire text."""
+    selected_text = f"{utility.name} {utility.source_area_name} {wildfire.name}".lower()
+    return "breitenbush" in selected_text
+
+
+def _clear_admin_login_query_param() -> None:
+    if "admin_login" in st.query_params:
+        del st.query_params["admin_login"]
+
+
+@st.dialog("Admin sign in")
+def _render_admin_login_dialog() -> None:
+    if not admin_password_is_configured():
+        st.warning("Admin editing is disabled. Set `EMBER_ADMIN_PASSWORD` to enable it.")
+        if st.button("Close"):
+            st.session_state["show_admin_login"] = False
+            st.rerun()
+        return
+
+    with st.form("admin_login_form"):
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Open admin editor")
+
+    if submitted:
+        if admin_password_matches(password):
+            st.session_state["admin_mode"] = True
+            st.session_state["show_admin_login"] = False
+            _clear_admin_login_query_param()
+            st.rerun()
+        st.error("Incorrect admin password.")
+
+    if st.button("Cancel"):
+        st.session_state["show_admin_login"] = False
+        _clear_admin_login_query_param()
+        st.rerun()
+
+
+def _render_admin_launcher(current_view_mode: str) -> None:
+    st.markdown(
+        """
+        <style>
+        .ember-admin-launcher {
+            position: fixed;
+            right: 1rem;
+            bottom: 0.75rem;
+            z-index: 9999;
+            color: #777;
+            font-size: 0.8rem;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            background: rgba(255, 255, 255, 0.85);
+            padding: 0.2rem 0.35rem;
+            border-radius: 0.25rem;
+        }
+        .ember-admin-launcher:hover {
+            color: #333;
+        }
+        </style>
+        <a class="ember-admin-launcher" href="?admin_login=1" target="_self">Admin</a>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.query_params.get("admin_login") == "1":
+        _clear_admin_login_query_param()
+        if not st.session_state.get("admin_mode"):
+            st.session_state["show_admin_login"] = True
+            st.session_state["admin_login_view_mode"] = current_view_mode
+
+    if (
+        st.session_state.get("show_admin_login")
+        and st.session_state.get("admin_login_view_mode") != current_view_mode
+    ):
+        st.session_state["show_admin_login"] = False
+
+    if st.session_state.get("show_admin_login") and not st.session_state.get("admin_mode"):
+        _render_admin_login_dialog()
+
+
 def main() -> None:
     """Render the EMBER dashboard."""
     st.title("EMBER")
@@ -107,22 +212,31 @@ def main() -> None:
     catalog = cached_catalog()
     utilities = catalog.list_utilities()
 
+    if st.session_state.get("admin_mode"):
+        if st.button("Exit admin mode"):
+            st.session_state["admin_mode"] = False
+            st.rerun()
+        render_admin_view(catalog, metrics_registry)
+        return
+
     view_mode = st.radio(
         "View",
         options=[
-            "Single fire \u00d7 utility",
-            "Fires by utility & year range",
-            "Utilities by fire",
+            "Search by Case Study",
+            "Search by utility",
+            "Search by wildfire",
         ],
         horizontal=True,
     )
-    if view_mode == "Fires by utility & year range":
+    _render_admin_launcher(view_mode)
+
+    if view_mode == "Search by utility":
         # The range view queries fires by overlap pair, so it never needs the full
         # 8,920-row wildfire list that the single-fire selector relies on.
         render_range_view(catalog, utilities)
         return
 
-    if view_mode == "Utilities by fire":
+    if view_mode == "Search by wildfire":
         render_fire_view(catalog, catalog.list_wildfires())
         return
 
@@ -142,6 +256,7 @@ def main() -> None:
 
     feature_rows: list[tuple[MetricDefinition, str, str | None]] = []
     metric_state_payload: dict[str, tuple[str, MetricValue | None, RasterAsset | None]] = {}
+    metric_helper_text: dict[str, str] = {}
     for metric in profile_metrics:
         pair_summary, payload = cached_pair_data(
             utility_id=selector_state.utility_id,
@@ -152,6 +267,26 @@ def main() -> None:
         state = resolve_state(pair_summary.has_overlap, payload)
         scalar_payload = payload if isinstance(payload, MetricValue) else None
         raster_payload = payload if isinstance(payload, RasterAsset) else None
+        if metric.key == "total_econ_impact" and _is_holiday_farm_eweb_case_study(
+            selected_utility, selected_wildfire
+        ):
+            scalar_payload = MetricValue(
+                utility_id=selector_state.utility_id,
+                wildfire_id=selector_state.wildfire_id,
+                metric_key=metric.key,
+                value=DEMO_TOTAL_ECON_IMPACT,
+                unit=metric.unit or "USD",
+                method="demo override",
+                source_note=None,
+                as_of_date=None,
+            )
+            raster_payload = None
+            state = "available"
+            metric_helper_text[metric.key] = DEMO_TOTAL_ECON_IMPACT_HELPER
+        elif metric.key == "total_econ_impact" and _is_breitenbush_case_study(
+            selected_utility, selected_wildfire
+        ):
+            metric_helper_text[metric.key] = BREITENBUSH_TOTAL_ECON_IMPACT_HELPER
         metric_state_payload[metric.key] = (state, scalar_payload, raster_payload)
         rendered_value = (
             format_scalar_value(metric, scalar_payload.value)
@@ -185,7 +320,13 @@ def main() -> None:
         st.subheader("Profile Features")
         for metric in profile_metrics:
             state, scalar_payload, known_raster_payload = metric_state_payload[metric.key]
-            render_feature_panel(metric, state, scalar_payload, known_raster_payload)  # type: ignore[arg-type]
+            render_feature_panel(
+                metric,
+                state,
+                scalar_payload,
+                known_raster_payload,
+                helper_text=metric_helper_text.get(metric.key),
+            )  # type: ignore[arg-type]
 
         export_html = build_export_html(
             utility_name=selected_utility.name,

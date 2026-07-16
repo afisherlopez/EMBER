@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     geojson_simplify_tolerance: float = Field(
         default=0.0005, description="DuckDB ST_Simplify tolerance in degrees."
     )
+    ember_admin_password: str = Field(
+        default="",
+        description="Password required to use the in-app admin data editor. Leave blank to disable.",
+    )
 
     @property
     def cors_origin_list(self) -> list[str]:

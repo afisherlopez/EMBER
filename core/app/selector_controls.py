@@ -33,7 +33,7 @@ def render_selectors(
     profiles: dict[str, ProfileDefinition], utilities: list[Utility], wildfires: list[Wildfire]
 ) -> SelectorState:
     """Render selector row and return selected profile, utility, and wildfire ids."""
-    profile_col, utility_col, wildfire_col = st.columns([2, 2, 3])
+    profile_col, utility_state_col, utility_col, wildfire_col = st.columns([2, 1, 2, 3])
 
     profile_options = list(profiles.keys())
     with profile_col:
@@ -44,7 +44,15 @@ def render_selectors(
             format_func=lambda key: profiles[key].label,
         )
 
-    utility_map = {f"{u.name} ({u.state})": u.utility_id for u in utilities}
+    utility_states = sorted({u.state for u in utilities})
+    with utility_state_col:
+        utility_state_filter = st.selectbox("Utility state filter", ["All"] + utility_states, index=0)
+
+    filtered_utilities = utilities
+    if utility_state_filter != "All":
+        filtered_utilities = [u for u in utilities if u.state == utility_state_filter]
+
+    utility_map = {f"{u.name} ({u.state})": u.utility_id for u in filtered_utilities}
     with utility_col:
         utility_label = st.selectbox("Water utility", options=list(utility_map.keys()), index=None, placeholder="Select utility")
     utility_id = utility_map.get(utility_label) if utility_label else None

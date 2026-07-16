@@ -12,7 +12,7 @@ def test_registry_loads_sample_config() -> None:
     base = Path(__file__).resolve().parents[1] / "config"
     metrics = load_metric_registry(base / "metrics.yaml")
     profiles = load_profile_registry(base / "profiles.yaml", metrics)
-    assert "econ_impact_5yr" in metrics
+    assert "total_econ_impact" in metrics
     assert "water_utility" in profiles
 
 

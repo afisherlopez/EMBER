@@ -131,8 +131,16 @@ def render_range_view(catalog: Catalog, utilities: list[Utility]) -> None:
     """Render the 'select a utility + year range -> intersecting wildfires' view."""
     st.subheader("Wildfires intersecting a utility's source area")
 
-    utility_map = {f"{u.name} ({u.state})": u.utility_id for u in utilities}
-    control_col, year_col = st.columns([2, 3])
+    utility_states = sorted({u.state for u in utilities})
+    state_col, control_col, year_col = st.columns([1, 2, 3])
+    with state_col:
+        utility_state_filter = st.selectbox("Utility state filter", ["All"] + utility_states, index=0)
+
+    filtered_utilities = utilities
+    if utility_state_filter != "All":
+        filtered_utilities = [u for u in utilities if u.state == utility_state_filter]
+
+    utility_map = {f"{u.name} ({u.state})": u.utility_id for u in filtered_utilities}
     with control_col:
         utility_label = st.selectbox(
             "Water utility", options=list(utility_map.keys()), index=None, placeholder="Select utility"
@@ -161,7 +169,7 @@ def render_range_view(catalog: Catalog, utilities: list[Utility]) -> None:
         st.info("Select a water utility to see the wildfires that intersected its source area.")
         return
 
-    utility = next(u for u in utilities if u.utility_id == utility_id)
+    utility = next(u for u in filtered_utilities if u.utility_id == utility_id)
     fires = catalog.list_intersecting_wildfires(utility_id, year_range[0], year_range[1])
 
     if not fires:

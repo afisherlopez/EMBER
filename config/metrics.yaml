@@ -1,11 +1,6 @@
 metrics:
-  econ_impact_5yr:
-    display_name: "Economic impact to utility over 5 years"
-    kind: scalar
-    unit: USD
-    value_format: "${:,.0f}"
   total_econ_impact:
-    display_name: "Total estimated economic impact from fire"
+    display_name: "Total estimated economic impact on utility due to wildfire"
     kind: scalar
     unit: USD
     value_format: "${:,.0f}"
