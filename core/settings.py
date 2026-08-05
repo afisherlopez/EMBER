@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     google_application_credentials: str = Field(
         default="",
         description=(
-            "Service-account JSON path used by every GCS reader (DuckDB via gcsfs, "
-            "GDAL/TiTiler, and the storage client). Leave blank on managed runtimes "
+            "Service-account JSON path used by every GCS reader (the storage client and "
+            "GDAL/TiTiler). Leave blank on managed runtimes "
             "(e.g. Cloud Run) to use the attached service account via ADC."
         ),
     )
@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     geojson_simplify_tolerance: float = Field(
         default=0.0005, description="DuckDB ST_Simplify tolerance in degrees."
     )
+    ember_wildfire_states: str = Field(
+        default="WA,OR,CA,CO",
+        description="Comma-separated state codes retained when the app loads wildfire data.",
+    )
     ember_admin_password: str = Field(
         default="",
         description="Password required to use the in-app admin data editor. Leave blank to disable.",
@@ -64,6 +68,15 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         """Return CORS origins parsed from the comma-separated `cors_origins` value."""
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def wildfire_state_list(self) -> list[str]:
+        """Return normalized state codes included in wildfire catalog queries."""
+        return [
+            item.strip().upper()
+            for item in self.ember_wildfire_states.split(",")
+            if item.strip()
+        ]
 
     @cached_property
     def data_root_path(self) -> Path:

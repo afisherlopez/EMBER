@@ -12,6 +12,7 @@ from typing import Any
 import duckdb
 from google.cloud import storage as gcs_storage
 
+from core.case_study_costs import CaseStudyCostInput
 from core.settings import settings
 
 
@@ -21,7 +22,7 @@ class AdminWriteResult:
 
     table: str
     table_uri: str
-    backup_uri: str
+    backup_uri: str | None
 
 
 def _timestamp() -> str:
@@ -61,25 +62,34 @@ def _backup_and_publish(table: str, updated_file: Path) -> AdminWriteResult:
         client = gcs_storage.Client(project=settings.gcs_project or None)
         bucket = client.bucket(settings.gcs_bucket)
         source_blob = bucket.blob(_object_key(key))
-        backup_blob_name = _object_key(backup_key)
-        bucket.copy_blob(source_blob, bucket, backup_blob_name)
+        backup_blob_name = None
+        if source_blob.exists():
+            backup_blob_name = _object_key(backup_key)
+            bucket.copy_blob(source_blob, bucket, backup_blob_name)
         source_blob.upload_from_filename(updated_file.as_posix())
         return AdminWriteResult(
             table=table,
             table_uri=f"gs://{settings.gcs_bucket}/{_object_key(key)}",
-            backup_uri=f"gs://{settings.gcs_bucket}/{backup_blob_name}",
+            backup_uri=(
+                f"gs://{settings.gcs_bucket}/{backup_blob_name}"
+                if backup_blob_name
+                else None
+            ),
         )
 
     table_path = _local_path(key)
     backup_path = _local_path(backup_key)
-    backup_path.parent.mkdir(parents=True, exist_ok=True)
     table_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(table_path, backup_path)
+    backup_uri = None
+    if table_path.exists():
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(table_path, backup_path)
+        backup_uri = backup_path.as_posix()
     shutil.copy2(updated_file, table_path)
     return AdminWriteResult(
         table=table,
         table_uri=table_path.as_posix(),
-        backup_uri=backup_path.as_posix(),
+        backup_uri=backup_uri,
     )
 
 
@@ -213,3 +223,81 @@ def upsert_raster_asset(
             ),
         ],
     )
+
+
+def replace_case_study_costs(
+    *,
+    utility_id: str,
+    wildfire_id: str,
+    rows: list[CaseStudyCostInput],
+) -> AdminWriteResult:
+    """Replace all raw economic-impact rows for one utility-wildfire pair."""
+    with tempfile.TemporaryDirectory(prefix="ember_admin_case_study_costs_") as tmp:
+        output = Path(tmp) / "case_study_costs.updated.parquet"
+        conn = duckdb.connect(database=":memory:")
+        conn.execute(
+            """
+            CREATE TABLE edited (
+                utility_id VARCHAR,
+                wildfire_id VARCHAR,
+                item_type VARCHAR,
+                start_year INTEGER,
+                end_year INTEGER,
+                description VARCHAR,
+                raw_cost DOUBLE,
+                inflation_adjusted_cost DOUBLE,
+                contributing_fires VARCHAR,
+                source VARCHAR,
+                method VARCHAR,
+                description_and_notes VARCHAR
+            )
+            """
+        )
+
+        key = "tables/case_study_costs.parquet"
+        existing_path: Path | None = None
+        if settings.ember_storage_backend == "gcs":
+            client = gcs_storage.Client(project=settings.gcs_project or None)
+            blob = client.bucket(settings.gcs_bucket).blob(_object_key(key))
+            if blob.exists():
+                existing_path = Path(tmp) / "case_study_costs.source.parquet"
+                blob.download_to_filename(existing_path.as_posix())
+        else:
+            local_path = _local_path(key)
+            if local_path.exists():
+                existing_path = local_path
+
+        if existing_path is not None:
+            conn.execute(
+                """
+                INSERT INTO edited
+                SELECT * FROM read_parquet(?)
+                WHERE utility_id <> ? OR wildfire_id <> ?
+                """,
+                [existing_path.as_posix(), utility_id, wildfire_id],
+            )
+
+        conn.executemany(
+            """
+            INSERT INTO edited VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                [
+                    utility_id,
+                    wildfire_id,
+                    row.item_type,
+                    row.start_year,
+                    row.end_year,
+                    row.description,
+                    row.raw_cost,
+                    row.inflation_adjusted_cost,
+                    row.contributing_fires,
+                    row.source,
+                    row.method,
+                    row.description_and_notes,
+                ]
+                for row in rows
+            ],
+        )
+        conn.execute(f"COPY edited TO '{output.as_posix()}' (FORMAT PARQUET)")
+        return _backup_and_publish("case_study_costs", output)

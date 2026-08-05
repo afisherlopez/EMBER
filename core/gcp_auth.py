@@ -36,6 +36,34 @@ _CONFIG_KEYS = (
 _SERVICE_ACCOUNT_KEY = "gcp_service_account"
 
 
+def _bootstrap_gdal_from_local_adc() -> None:
+    """Expose local gcloud user ADC fields in the names GDAL's GCS driver reads."""
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        return
+    cloud_config = os.environ.get("CLOUDSDK_CONFIG")
+    adc_path = (
+        os.path.join(cloud_config, "application_default_credentials.json")
+        if cloud_config
+        else os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
+    )
+    if not os.path.isfile(adc_path):
+        return
+    try:
+        with open(adc_path, encoding="utf-8") as handle:
+            credentials = json.load(handle)
+    except (OSError, ValueError):
+        return
+    mappings = {
+        "GS_OAUTH2_REFRESH_TOKEN": "refresh_token",
+        "GS_OAUTH2_CLIENT_ID": "client_id",
+        "GS_OAUTH2_CLIENT_SECRET": "client_secret",
+    }
+    for environment_key, credential_key in mappings.items():
+        value = credentials.get(credential_key)
+        if value:
+            os.environ.setdefault(environment_key, str(value))
+
+
 def _load_secrets() -> Any | None:
     """Return the Streamlit secrets mapping, or None when unavailable.
 
@@ -69,6 +97,7 @@ def bootstrap_gcp_credentials() -> None:
     """
     secrets = _load_secrets()
     if secrets is None:
+        _bootstrap_gdal_from_local_adc()
         return
 
     for key in _CONFIG_KEYS:

@@ -234,6 +234,39 @@ A single read-only service account authenticates every reader: DuckDB (Parquet v
 
 > The reader SA is scoped to the `EMBER/` prefix via a bucket IAM **condition**. GCS conditions must use the full object-resource form, e.g. `resource.name.startsWith("projects/_/buckets/data_main_gcs/objects/EMBER/")` — a bare `EMBER/` prefix matches nothing and denies all reads. Object reads (`storage.objects.get`) work under this condition; `storage.objects.list` does not, and the app only needs `get`.
 
+### Rebuilding published source data
+
+One command rebuilds the combined Oregon/Washington utility table, reads the
+single MTBS CONUS perimeter dataset from GCS, retains WA, OR, CA, and CO, and
+recomputes all utility/wildfire overlaps:
+
+```bash
+python scripts/ingest_all.py
+```
+
+This is a local dry run under `data/published/`. After checking the counts, publish
+the three rebuilt tables with timestamped backups:
+
+```bash
+python scripts/ingest_all.py --publish
+```
+
+Use `--states` to override the default state set. The vector CONUS source defaults to
+`gs://data_main_gcs/EMBER/fire_burn_perimeters/CONUS_perimeter_data/mtbs_perimeter_data.zip`;
+the loader downloads the archive and extracts `mtbs_perims_DD.shp` with its
+sidecars automatically.
+
+Annual MTBS burn-severity uploads are published separately as tile-ready COGs:
+
+```bash
+python scripts/publish_burn_severity.py
+```
+
+The command converts every uploaded annual ZIP in parallel, skips COGs that
+already exist, and writes `fire_burn_severity/cogs/manifest.json`. The dashboard
+uses that manifest to provide an in-map Burn Severity control. Multiple years
+can be selected; overlapping pixels use the most recent selected year.
+
 ### Deploy to Cloud Run
 
 Two services (app + tiler) build from one `Dockerfile`; `scripts/entrypoint.sh` selects the process via the `SERVICE` env var and binds to `$PORT`.

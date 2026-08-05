@@ -9,10 +9,12 @@ import streamlit as st
 
 from core.admin_data import (
     AdminWriteResult,
+    replace_case_study_costs,
     upsert_pair_summary,
     upsert_raster_asset,
     upsert_scalar_metric,
 )
+from core.case_study_costs import CaseStudyCSVError, parse_case_study_csv
 from core.catalog import Catalog
 from core.models import MetricDefinition, Utility, Wildfire
 from core.settings import settings
@@ -64,7 +66,10 @@ def _show_write_result(result: AdminWriteResult) -> None:
     st.cache_data.clear()
     st.cache_resource.clear()
     st.success(f"Updated `{result.table}`.")
-    st.caption(f"Backup: `{result.backup_uri}`")
+    if result.backup_uri:
+        st.caption(f"Backup: `{result.backup_uri}`")
+    else:
+        st.caption("Created a new table; there was no previous version to back up.")
     st.caption(f"Published table: `{result.table_uri}`")
     st.info("Cached Parquet reads were cleared. Return to the dashboard to reload the updated data.")
     if st.button("Return to dashboard with updated data", key=f"return_after_{result.table}"):
@@ -190,6 +195,42 @@ def _render_raster_asset_form(
         _show_write_result(result)
 
 
+def _render_case_study_cost_form(
+    utilities: list[Utility],
+    wildfires: list[Wildfire],
+) -> None:
+    st.subheader("Case Study Cost Data")
+    st.caption(
+        "Upload a CSV to replace the raw economic-impact rows for one utility and wildfire. "
+        "Source PDFs must be stored in `case_studies/` with names matching the Source column."
+    )
+    utility_labels = _utility_options(utilities)
+    wildfire_labels = _wildfire_options(wildfires)
+
+    with st.form("admin_case_study_costs"):
+        utility, wildfire = _selected_pair(utility_labels, wildfire_labels)
+        uploaded_file = st.file_uploader("Case-study CSV", type=["csv"])
+        submitted = st.form_submit_button("Save case-study cost data")
+
+    if not submitted:
+        return
+    if uploaded_file is None:
+        st.error("Choose a CSV file to upload.")
+        return
+    try:
+        rows = parse_case_study_csv(uploaded_file.getvalue())
+    except CaseStudyCSVError as exc:
+        st.error(str(exc))
+        return
+    result = replace_case_study_costs(
+        utility_id=utility.utility_id,
+        wildfire_id=wildfire.wildfire_id,
+        rows=rows,
+    )
+    st.success(f"Validated and stored {len(rows)} row(s).")
+    _show_write_result(result)
+
+
 def render_admin_view(catalog: Catalog, metrics: dict[str, MetricDefinition]) -> None:
     """Render the admin data editor."""
     st.subheader("Admin Data Editor")
@@ -201,9 +242,13 @@ def render_admin_view(catalog: Catalog, metrics: dict[str, MetricDefinition]) ->
 
     utilities = catalog.list_utilities()
     wildfires = catalog.list_wildfires()
-    scalar_tab, pair_tab, raster_tab = st.tabs(["Scalar metrics", "Pair summaries", "Raster assets"])
+    scalar_tab, costs_tab, pair_tab, raster_tab = st.tabs(
+        ["Scalar metrics", "Case study costs", "Pair summaries", "Raster assets"]
+    )
     with scalar_tab:
         _render_scalar_metric_form(utilities, wildfires, metrics)
+    with costs_tab:
+        _render_case_study_cost_form(utilities, wildfires)
     with pair_tab:
         _render_pair_summary_form(utilities, wildfires)
     with raster_tab:

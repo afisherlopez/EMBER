@@ -27,6 +27,7 @@ class Wildfire:
     name: str
     ignition_date: date | None
     containment_date: date | None
+    acres: float | None
     state: str
     county: str
     centroid_lon: float
@@ -56,6 +57,36 @@ class MetricValue:
     method: str | None
     source_note: str | None
     as_of_date: date | None
+
+
+@dataclass(frozen=True)
+class CaseStudyCost:
+    """One raw economic-impact input row for a utility-wildfire case study."""
+
+    utility_id: str
+    wildfire_id: str
+    item_type: str
+    start_year: int
+    end_year: int
+    description: str
+    raw_cost: float
+    inflation_adjusted_cost: float
+    contributing_fires: str
+    source: str
+    method: str
+    description_and_notes: str
+
+
+@dataclass(frozen=True)
+class CaseStudy:
+    """A utility-wildfire pair with uploaded economic-impact source data."""
+
+    utility_id: str
+    utility_name: str
+    utility_state: str
+    wildfire_id: str
+    wildfire_name: str
+    ignition_year: int | None
 
 
 @dataclass(frozen=True)

@@ -1,8 +1,9 @@
-"""Utility x year-range view: all wildfires intersecting a source area over a period."""
+"""Case-study view for wildfires intersecting a utility source area over time."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 import folium
 import matplotlib
@@ -13,6 +14,7 @@ import numpy as np  # noqa: E402
 import streamlit as st  # noqa: E402
 from streamlit_folium import st_folium  # noqa: E402
 
+from core.app.map_view import add_burn_severity_layer  # noqa: E402
 from core.catalog import Catalog  # noqa: E402
 from core.models import IntersectingWildfire, Utility  # noqa: E402
 
@@ -92,11 +94,23 @@ def _render_overlap_chart(
     plt.close(fig)
 
 
-def _render_map(utility: Utility, utility_geojson: dict, fires: list[IntersectingWildfire]) -> None:
+def _render_map(
+    utility: Utility,
+    utility_geojson: dict,
+    fires: list[IntersectingWildfire],
+    burn_severity_years: list[int],
+) -> None:
     fmap = folium.Map(
         location=[utility.centroid_lat, utility.centroid_lon], zoom_start=9, control_scale=True
     )
     bounds_points: list[tuple[float, float]] = []
+
+    add_burn_severity_layer(
+        fmap,
+        burn_severity_years,
+        show=False,
+        year_control=True,
+    )
 
     folium.GeoJson(
         utility_geojson, name=f"{utility.name} source area", style_function=_utility_style
@@ -127,7 +141,12 @@ def _render_map(utility: Utility, utility_geojson: dict, fires: list[Intersectin
     st_folium(fmap, width=750, height=560, returned_objects=[])
 
 
-def render_range_view(catalog: Catalog, utilities: list[Utility]) -> None:
+def render_case_study_view(
+    catalog: Catalog,
+    utilities: list[Utility],
+    render_overview: Callable[[], None],
+    available_burn_severity_years: set[int],
+) -> None:
     """Render the 'select a utility + year range -> intersecting wildfires' view."""
     st.subheader("Wildfires intersecting a utility's source area")
 
@@ -166,13 +185,16 @@ def render_range_view(catalog: Catalog, utilities: list[Utility]) -> None:
             )
 
     if not utility_id:
+        render_overview()
         st.info("Select a water utility to see the wildfires that intersected its source area.")
         return
 
     utility = next(u for u in filtered_utilities if u.utility_id == utility_id)
     fires = catalog.list_intersecting_wildfires(utility_id, year_range[0], year_range[1])
+    utility_geojson = catalog.get_geojson("utilities", utility_id, simplify_tolerance=0.0)
 
     if not fires:
+        _render_map(utility, utility_geojson, [], [])
         st.warning(
             f"No wildfires intersected {utility.name}'s source area between "
             f"{year_range[0]} and {year_range[1]}."
@@ -189,10 +211,17 @@ def render_range_view(catalog: Catalog, utilities: list[Utility]) -> None:
             "the table below lists all of them."
         )
 
-    utility_geojson = catalog.get_geojson("utilities", utility_id, simplify_tolerance=0.0)
     map_col, table_col = st.columns([3, 2], gap="large")
     with map_col:
-        _render_map(utility, utility_geojson, fires)
+        severity_years = sorted(
+            {
+                fire.ignition_year
+                for fire in fires
+                if fire.ignition_year in available_burn_severity_years
+            },
+            reverse=True,
+        )
+        _render_map(utility, utility_geojson, fires, severity_years)
     with table_col:
         st.dataframe(
             [
@@ -207,7 +236,7 @@ def render_range_view(catalog: Catalog, utilities: list[Utility]) -> None:
                 }
                 for fire in fires
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.markdown("**Overlap area over time**")

@@ -8,49 +8,30 @@ then computes utility x wildfire overlaps using Washington MTBS perimeters.
 from __future__ import annotations
 
 import argparse
+import sys
 import tempfile
 from pathlib import Path
 
 import duckdb
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ingest_mtbs import (
+    WILDFIRE_INCIDENT_TYPES,
+    _resolve_shapefile,
+    build_wildfires,
+)
+
 DISPLAY_SIMPLIFY_DEG = 0.0005
 AREA_CRS = "EPSG:5070"
 SOURCE_CRS = "EPSG:3857"
-MIN_FIRE_YEAR = 1900
-MAX_FIRE_YEAR = 2026
 STATE_CODE = "WA"
-WILDFIRE_INCIDENT_TYPES = ("WILDFIRE", "WILDLAND FIRE USE")
-DEFAULT_DOH_GDB = "./water_source_areas/DOH Drinking Water Full Watershed.gdb"
-DEFAULT_FIRES_SHP = (
-    "gs://data_main_gcs/EMBER/fire_burn_perimeters/"
-    "Washington_MTBS_perimeter_data/mtbs_perims_DD.shp"
+DEFAULT_DOH_GDB = (
+    "gs://data_main_gcs/EMBER/water_source_areas/"
+    "DOH Drinking Water Full Watershed.gdb"
 )
-
-
-def _resolve_shapefile(path: str) -> str:
-    """Return a local shapefile path, downloading sidecars first for ``gs://`` paths."""
-    if not path.startswith("gs://"):
-        return path
-
-    import gcsfs
-
-    fs = gcsfs.GCSFileSystem()
-    bucket_path = path[len("gs://") :]
-    directory, shp_name = bucket_path.rsplit("/", 1)
-    stem = shp_name.rsplit(".", 1)[0]
-    tmp_dir = Path(tempfile.mkdtemp(prefix="mtbs_wa_"))
-    local_shp: str | None = None
-    for remote in fs.ls(directory):
-        name = remote.rsplit("/", 1)[-1]
-        if name.rsplit(".", 1)[0] != stem:
-            continue
-        local = (tmp_dir / name).as_posix()
-        fs.get(remote, local)
-        if name.lower().endswith(".shp"):
-            local_shp = local
-    if local_shp is None:
-        raise FileNotFoundError(f"No .shp found alongside {path}")
-    return local_shp
 
 
 def _connect() -> duckdb.DuckDBPyConnection:
@@ -59,10 +40,28 @@ def _connect() -> duckdb.DuckDBPyConnection:
     return conn
 
 
-def _resolve_doh_gdb(path: Path) -> Path:
-    """Resolve the DOH FileGDB from the expected raw-data locations."""
+def _resolve_doh_gdb(path: str) -> Path:
+    """Resolve a local or GCS DOH FileGDB to a local directory."""
+    if path.startswith("gs://"):
+        import gcsfs
+
+        fs = gcsfs.GCSFileSystem()
+        remote_root = path[len("gs://") :].rstrip("/")
+        tmp_root = Path(tempfile.mkdtemp(prefix="doh_wa_"))
+        local_gdb = tmp_root / Path(remote_root).name
+        local_gdb.mkdir()
+        remote_files = fs.find(remote_root)
+        if not remote_files:
+            raise FileNotFoundError(f"No FileGDB objects found under {path}")
+        for remote in remote_files:
+            relative = remote.removeprefix(f"{remote_root}/")
+            local_file = local_gdb / relative
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+            fs.get(remote, local_file.as_posix())
+        return local_gdb
+
     candidates = [
-        path,
+        Path(path),
         Path("./DOH Drinking Water Full Watershed.gdb"),
         Path("./data/raw/DOH Drinking Water Full Watershed.gdb"),
     ]
@@ -79,7 +78,7 @@ def build_utilities(conn: duckdb.DuckDBPyConnection, doh_gdb: str) -> None:
         f"""
         CREATE OR REPLACE TEMP TABLE util_diss AS
         SELECT
-            lower(PwsId) AS utility_id,
+            'wa' || lower(PwsId) AS utility_id,
             any_value(SystemName) AS name,
             '{STATE_CODE}' AS state,
             string_agg(DISTINCT nullif(trim(SrcName), ''), '; ') AS source_area_name,
@@ -98,77 +97,10 @@ def build_utilities(conn: duckdb.DuckDBPyConnection, doh_gdb: str) -> None:
     )
 
 
-def build_wildfires(
-    conn: duckdb.DuckDBPyConnection,
-    mtbs_shp: str,
-    state_code: str = STATE_CODE,
-    incident_types: tuple[str, ...] = WILDFIRE_INCIDENT_TYPES,
-) -> None:
-    """Read MTBS perimeters for Washington into one row per wildfire."""
-    types_sql = ", ".join(f"'{incident_type}'" for incident_type in incident_types)
-    conn.execute(
-        f"""
-        CREATE OR REPLACE TEMP TABLE fires_raw AS
-        WITH src AS (
-            SELECT
-                nullif(trim(incid_name), '') AS incident,
-                TRY_CAST(ig_date AS DATE) AS ignition_date,
-                TRY_CAST(burnbndac AS DOUBLE) AS acres,
-                ST_MakeValid(geom) AS geom
-            FROM ST_Read('{mtbs_shp}')
-            WHERE substr(upper(event_id), 1, 2) = '{state_code}'
-              AND upper(trim(incid_type)) IN ({types_sql})
-        ),
-        valid AS (
-            SELECT
-                incident,
-                ignition_date,
-                EXTRACT(YEAR FROM ignition_date)::INTEGER AS year,
-                acres,
-                geom
-            FROM src
-            WHERE ignition_date IS NOT NULL
-              AND EXTRACT(YEAR FROM ignition_date) BETWEEN {MIN_FIRE_YEAR} AND {MAX_FIRE_YEAR}
-        ),
-        slugged AS (
-            SELECT
-                coalesce(
-                    nullif(regexp_replace(lower(incident), '[^a-z0-9]+', '-', 'g'), ''),
-                    'fire'
-                ) AS base_slug,
-                coalesce(incident, 'Unnamed Fire') AS name,
-                ignition_date, year, acres, geom
-            FROM valid
-        ),
-        ranked AS (
-            SELECT
-                base_slug || '-' || CAST(year AS VARCHAR) AS base_id,
-                row_number() OVER (
-                    PARTITION BY base_slug || '-' || CAST(year AS VARCHAR)
-                    ORDER BY acres DESC NULLS LAST
-                ) AS rn,
-                count(*) OVER (
-                    PARTITION BY base_slug || '-' || CAST(year AS VARCHAR)
-                ) AS grp_n,
-                name, ignition_date, year, acres, geom
-            FROM slugged
-        )
-        SELECT
-            CASE WHEN grp_n > 1 THEN base_id || '-' || CAST(rn AS VARCHAR) ELSE base_id END
-                AS wildfire_id,
-            name, ignition_date, year, acres, 'MTBS' AS source, geom
-        FROM ranked
-        """
-    )
-
-
-def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
-    """Write EMBER Parquet tables for utilities, fires, overlaps, and placeholders."""
+def write_utilities(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> Path:
+    """Write the Washington utilities table and return its path."""
     tables_dir.mkdir(parents=True, exist_ok=True)
     utilities_path = (tables_dir / "utilities.parquet").as_posix()
-    wildfires_path = (tables_dir / "wildfires.parquet").as_posix()
-    pair_path = (tables_dir / "pair_summary.parquet").as_posix()
-
     conn.execute(
         f"""
         COPY (
@@ -182,6 +114,15 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
         ) TO '{utilities_path}' (FORMAT PARQUET)
         """
     )
+    return Path(utilities_path)
+
+
+def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
+    """Write standalone EMBER tables for utilities, fires, overlaps, and placeholders."""
+    write_utilities(conn, tables_dir)
+    wildfires_path = (tables_dir / "wildfires.parquet").as_posix()
+    pair_path = (tables_dir / "pair_summary.parquet").as_posix()
+
     conn.execute(
         f"""
         COPY (
@@ -191,7 +132,7 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
                 ignition_date,
                 CAST(NULL AS DATE) AS containment_date,
                 acres,
-                '{STATE_CODE}' AS state,
+                state,
                 '' AS county,
                 ST_X(ST_Centroid(geom)) AS centroid_lon,
                 ST_Y(ST_Centroid(geom)) AS centroid_lat,
@@ -264,20 +205,31 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
     )
 
 
-def ingest(doh_gdb: Path, data_root: Path, fires_shp: str = DEFAULT_FIRES_SHP) -> None:
+def ingest(doh_gdb: str, data_root: Path, fires_shp: str | None = None) -> None:
     """Run the Washington ingest from DOH/MTBS sources to EMBER Parquet tables."""
     conn = _connect()
     resolved_doh_gdb = _resolve_doh_gdb(doh_gdb)
     print(f"Reading DOH geodatabase: {resolved_doh_gdb}", flush=True)
-    print(f"Resolving MTBS shapefile: {fires_shp}", flush=True)
-    local_shp = _resolve_shapefile(fires_shp)
 
     print("Dissolving full DOH watersheds...", flush=True)
     build_utilities(conn, resolved_doh_gdb.as_posix())
     print("  utilities:", conn.execute("SELECT count(*) FROM util_diss").fetchone()[0], flush=True)
 
+    if not fires_shp:
+        output = write_utilities(conn, data_root / "tables")
+        print(f"No Washington fire perimeter supplied; wrote utilities only: {output}", flush=True)
+        print("DONE", flush=True)
+        return
+
+    print(f"Resolving MTBS shapefile: {fires_shp}", flush=True)
+    local_shp = _resolve_shapefile(fires_shp)
     print("Reading Washington MTBS wildfire perimeters...", flush=True)
-    build_wildfires(conn, local_shp)
+    build_wildfires(
+        conn,
+        local_shp,
+        state_codes=(STATE_CODE,),
+        incident_types=WILDFIRE_INCIDENT_TYPES,
+    )
     print("  wildfires:", conn.execute("SELECT count(*) FROM fires_raw").fetchone()[0], flush=True)
 
     print("Writing tables + computing overlap pairs...", flush=True)
@@ -295,8 +247,11 @@ if __name__ == "__main__":
     parser.add_argument("--data-root", default="./data/published-wa", help="Output root (writes tables/).")
     parser.add_argument(
         "--fires-shp",
-        default=DEFAULT_FIRES_SHP,
-        help="MTBS perimeter shapefile (.shp) path; local or gs:// URI.",
+        default=None,
+        help=(
+            "Optional Washington-capable MTBS perimeter shapefile (.shp), local or gs://. "
+            "When omitted, only utilities.parquet is generated."
+        ),
     )
     args = parser.parse_args()
-    ingest(Path(args.doh_gdb), Path(args.data_root), args.fires_shp)
+    ingest(args.doh_gdb, Path(args.data_root), args.fires_shp)

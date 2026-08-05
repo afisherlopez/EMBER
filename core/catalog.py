@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Lock
 
 import duckdb
 
 from core.models import (
+    CaseStudy,
+    CaseStudyCost,
     IntersectingUtility,
     IntersectingWildfire,
     MetricValue,
@@ -25,32 +29,22 @@ class Catalog:
     """Encapsulates all DuckDB SQL access behind typed methods."""
 
     def __init__(self, storage: Storage) -> None:
-        """Initialize in-memory DuckDB connection, registering GCS access when needed."""
+        """Initialize the in-memory database and process-local dataset cache."""
         self._storage = storage
         self._materialized: set[str] = set()
+        self._dataset_cache: TemporaryDirectory[str] | None = None
+        self._dataset_download_lock = Lock()
+        self._materialization_lock = Lock()
         self._conn = duckdb.connect(database=":memory:")
         duckdb_home = Path(".duckdb").resolve()
         duckdb_home.mkdir(parents=True, exist_ok=True)
         self._conn.execute(f"SET home_directory='{duckdb_home.as_posix()}';")
         self._conn.execute(f"SET extension_directory='{(duckdb_home / 'extensions').as_posix()}';")
         if settings.ember_storage_backend == "gcs":
-            self._register_gcs_filesystem()
-
-    def _register_gcs_filesystem(self) -> None:
-        """Register a native GCS filesystem so DuckDB reads ``gs://`` Parquet directly.
-
-        DuckDB's built-in ``httpfs`` can only reach GCS through the S3-compatibility API,
-        which requires separate, long-lived HMAC keys (an AWS-shaped credential that GCS
-        org policy often disables). Registering ``gcsfs`` instead lets DuckDB authenticate
-        with Google Application Default Credentials — the same service account used by
-        GDAL/TiTiler for COGs and by ``core/storage.py`` for object reads. The result is a
-        single credential for the whole app: ``GOOGLE_APPLICATION_CREDENTIALS`` (a JSON key)
-        locally, or the attached service account on managed runtimes like Cloud Run.
-        """
-        import gcsfs
-
-        token = settings.google_application_credentials or None
-        self._conn.register_filesystem(gcsfs.GCSFileSystem(token=token))
+            # DuckDB's Python-backed gcsfs adapter can deadlock while its worker waits for
+            # the GIL. Stream each Parquet object to a private local cache instead, then let
+            # DuckDB use its native filesystem without any callbacks into Python.
+            self._dataset_cache = TemporaryDirectory(prefix="ember-catalog-")
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:
@@ -58,6 +52,20 @@ class Catalog:
         return self._conn
 
     def _dataset(self, name: str) -> str:
+        if self._dataset_cache is not None:
+            destination = Path(self._dataset_cache.name) / f"{name}.parquet"
+            with self._dataset_download_lock:
+                if not destination.exists():
+                    partial = destination.with_suffix(".parquet.part")
+                    try:
+                        self._storage.download_to_path(
+                            f"tables/{name}.parquet",
+                            partial,
+                        )
+                        partial.replace(destination)
+                    finally:
+                        partial.unlink(missing_ok=True)
+            return destination.as_posix()
         return self._storage.dataset_uri(name)
 
     def _table(self, name: str) -> str:
@@ -70,11 +78,17 @@ class Catalog:
         return in milliseconds. The connection is cached for the app's lifetime, so new
         data published to GCS is picked up on the next app restart.
         """
-        if name not in self._materialized:
-            self._conn.execute(
-                f'CREATE TABLE "{name}" AS SELECT * FROM read_parquet(\'{self._dataset(name)}\')'
-            )
-            self._materialized.add(name)
+        with self._materialization_lock:
+            if name not in self._materialized:
+                dataset = self._dataset(name).replace("'", "''")
+                query = f'CREATE TABLE "{name}" AS SELECT * FROM read_parquet(\'{dataset}\')'
+                params: list[object] = []
+                if name == "wildfires" and settings.wildfire_state_list:
+                    placeholders = ", ".join("?" for _ in settings.wildfire_state_list)
+                    query += f" WHERE upper(state) IN ({placeholders})"
+                    params.extend(settings.wildfire_state_list)
+                self._conn.execute(query, params)
+                self._materialized.add(name)
         return f'"{name}"'
 
     def list_utilities(self) -> list[Utility]:
@@ -101,7 +115,9 @@ class Catalog:
         where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
         rows = self._conn.execute(
             f"""
-            SELECT wildfire_id, name, ignition_date, containment_date, state, county, centroid_lon, centroid_lat
+            SELECT
+                wildfire_id, name, ignition_date, containment_date, acres,
+                state, county, centroid_lon, centroid_lat
             FROM {self._table("wildfires")}
             {where_clause}
             ORDER BY ignition_date DESC, name
@@ -109,6 +125,59 @@ class Catalog:
             params,
         ).fetchall()
         return [Wildfire(*row) for row in rows]
+
+    def get_overview_geojson(self, table: str) -> dict:
+        """Return all source areas or wildfire perimeters as one GeoJSON layer."""
+        if table == "utilities":
+            id_column = "utility_id"
+            property_columns = ["name", "state", "source_area_name"]
+        elif table == "wildfires":
+            id_column = "wildfire_id"
+            property_columns = ["name", "state", "acres"]
+        else:
+            raise ValueError(f"Unsupported overview geometry table: {table}")
+
+        selected_columns = ", ".join([id_column, *property_columns, "geometry_geojson"])
+        rows = self._conn.execute(
+            f"SELECT {selected_columns} FROM {self._table(table)}"
+        ).fetchall()
+        features = []
+        for row in rows:
+            geometry_value = row[-1]
+            if geometry_value is None:
+                continue
+            geometry = (
+                json.loads(geometry_value)
+                if isinstance(geometry_value, str)
+                else geometry_value
+            )
+            if geometry.get("type") == "GeometryCollection":
+                polygon_parts = []
+                for part in geometry.get("geometries", []):
+                    if part.get("type") == "Polygon":
+                        polygon_parts.append(part["coordinates"])
+                    elif part.get("type") == "MultiPolygon":
+                        polygon_parts.extend(part["coordinates"])
+                if polygon_parts:
+                    geometry = {
+                        "type": "MultiPolygon",
+                        "coordinates": polygon_parts,
+                    }
+            properties = {id_column: row[0]}
+            properties.update(
+                {
+                    column: value
+                    for column, value in zip(property_columns, row[1:-1], strict=True)
+                }
+            )
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": geometry,
+                    "properties": properties,
+                }
+            )
+        return {"type": "FeatureCollection", "features": features}
 
     def get_pair_summary(self, utility_id: str, wildfire_id: str) -> PairSummary:
         """Return overlap summary for a pair, treating a missing row as no overlap.
@@ -236,6 +305,47 @@ class Catalog:
         if row is None:
             return None
         return MetricValue(*row)
+
+    def list_case_study_costs(
+        self, utility_id: str, wildfire_id: str
+    ) -> list[CaseStudyCost]:
+        """Return raw economic-impact inputs for one case study."""
+        if not self._storage.exists("tables/case_study_costs.parquet"):
+            return []
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                utility_id, wildfire_id, item_type, start_year, end_year,
+                description, raw_cost, inflation_adjusted_cost,
+                contributing_fires, source, method, description_and_notes
+            FROM {self._table("case_study_costs")}
+            WHERE utility_id = ? AND wildfire_id = ?
+            ORDER BY start_year, end_year, item_type, description
+            """,
+            [utility_id, wildfire_id],
+        ).fetchall()
+        return [CaseStudyCost(*row) for row in rows]
+
+    def list_case_studies(self) -> list[CaseStudy]:
+        """List utility-wildfire pairs that have uploaded case-study CSV rows."""
+        if not self._storage.exists("tables/case_study_costs.parquet"):
+            return []
+        rows = self._conn.execute(
+            f"""
+            SELECT DISTINCT
+                u.utility_id,
+                u.name AS utility_name,
+                u.state AS utility_state,
+                w.wildfire_id,
+                w.name AS wildfire_name,
+                EXTRACT(YEAR FROM w.ignition_date)::INTEGER AS ignition_year
+            FROM {self._table("case_study_costs")} c
+            JOIN {self._table("utilities")} u USING (utility_id)
+            JOIN {self._table("wildfires")} w USING (wildfire_id)
+            ORDER BY u.name, w.name, ignition_year
+            """
+        ).fetchall()
+        return [CaseStudy(*row) for row in rows]
 
     def get_raster_asset(self, utility_id: str, wildfire_id: str, metric_key: str) -> RasterAsset | None:
         """Return raster asset payload for a selected pair and metric."""

@@ -45,6 +45,8 @@ def bootstrap_sample_data(data_root: Path) -> None:
 
     sediment_path = (cogs_dir / "sediment_yield_increase_example.tif").resolve()
     turbidity_path = (cogs_dir / "turbidity_increase_example.tif").resolve()
+    sediment_sql_path = sediment_path.as_posix().replace("'", "''")
+    turbidity_sql_path = turbidity_path.as_posix().replace("'", "''")
     _write_sample_raster(sediment_path, value_scale=1.0)
     _write_sample_raster(turbidity_path, value_scale=0.35)
 
@@ -147,6 +149,32 @@ def bootstrap_sample_data(data_root: Path) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE case_study_costs AS
+        SELECT * FROM (
+            VALUES
+                (
+                    'denver-water',
+                    'hayman-2002',
+                    'Cost',
+                    2002,
+                    2002,
+                    'Sample watershed recovery cost',
+                    1250000.0,
+                    2100000.0,
+                    'Hayman Fire',
+                    'sample_report_2002',
+                    'Direct quantification',
+                    'Illustrative local fixture row'
+                )
+        ) AS t(
+            utility_id, wildfire_id, item_type, start_year, end_year, description,
+            raw_cost, inflation_adjusted_cost, contributing_fires, source, method,
+            description_and_notes
+        )
+        """
+    )
+    conn.execute(
+        f"""
         CREATE TABLE raster_assets AS
         SELECT * FROM (
             VALUES
@@ -154,7 +182,7 @@ def bootstrap_sample_data(data_root: Path) -> None:
                     'denver-water',
                     'hayman-2002',
                     'sediment_yield_increase',
-                    ?,
+                    '{sediment_sql_path}',
                     'tonnes/km^2/yr',
                     'ylorbr',
                     0.0,
@@ -166,7 +194,7 @@ def bootstrap_sample_data(data_root: Path) -> None:
                     'denver-water',
                     'hayman-2002',
                     'turbidity_increase',
-                    ?,
+                    '{turbidity_sql_path}',
                     'NTU',
                     'ylorbr',
                     0.0,
@@ -178,7 +206,7 @@ def bootstrap_sample_data(data_root: Path) -> None:
                     'foothills-utility',
                     'camp-2018',
                     'sediment_yield_increase',
-                    ?,
+                    '{sediment_sql_path}',
                     'tonnes/km^2/yr',
                     'ylorbr',
                     0.0,
@@ -190,13 +218,17 @@ def bootstrap_sample_data(data_root: Path) -> None:
             utility_id, wildfire_id, metric_key, cog_uri, units, colormap_name,
             rescale_min, rescale_max, nodata, as_of_date
         )
-        """,
-        # Store plain absolute paths so DuckDB and GDAL/TiTiler can both open them locally
-        # (file:// URIs break DuckDB on paths with spaces and are not understood by GDAL).
-        [sediment_path.as_posix(), turbidity_path.as_posix(), sediment_path.as_posix()],
+        """
     )
 
-    for name in ["utilities", "wildfires", "pair_summary", "scalar_metrics", "raster_assets"]:
+    for name in [
+        "utilities",
+        "wildfires",
+        "pair_summary",
+        "scalar_metrics",
+        "case_study_costs",
+        "raster_assets",
+    ]:
         conn.execute(f"COPY {name} TO '{(tables_dir / f'{name}.parquet').as_posix()}' (FORMAT PARQUET)")
 
 

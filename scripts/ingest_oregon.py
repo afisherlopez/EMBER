@@ -23,60 +23,29 @@ as GeoJSON text in ``geometry_geojson`` (the column the app renders).
 from __future__ import annotations
 
 import argparse
-import tempfile
+import sys
 from pathlib import Path
 
 import duckdb
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ingest_mtbs import (
+    DEFAULT_CONUS_PERIMETERS,
+    WILDFIRE_INCIDENT_TYPES,
+    _resolve_shapefile,
+    build_wildfires,
+)
 
 # Simplification tolerance (degrees) for stored display geometry. ~0.0005 deg ~= 50 m.
 DISPLAY_SIMPLIFY_DEG = 0.0005
 # Equal-area projection (meters) used only for area/overlap math.
 AREA_CRS = "EPSG:5070"
-# Plausible wildfire year bounds; filters out blanks and any future sentinel dates.
-MIN_FIRE_YEAR = 1900
-MAX_FIRE_YEAR = 2026
 # Two-letter state code used to subset the national MTBS file (matches the `event_id` prefix).
 STATE_CODE = "OR"
-# MTBS incident types kept as "wildfires" (prescribed/other burns are excluded).
-WILDFIRE_INCIDENT_TYPES = ("WILDFIRE", "WILDLAND FIRE USE")
-# Default location of the MTBS perimeter shapefile published to GCS.
-DEFAULT_FIRES_SHP = (
-    "gs://data_main_gcs/EMBER/fire_burn_perimeters/"
-    "Oregon_MTBS_perimeter_data/mtbs_perims_DD.shp"
-)
-
-
-def _resolve_shapefile(path: str) -> str:
-    """Return a local ``.shp`` path, fetching sidecar files first when ``path`` is ``gs://``.
-
-    A shapefile is really a set of sibling files (``.shp``/``.dbf``/``.shx``/``.prj``/
-    ``.cpg``) that GDAL must open together from the same directory. DuckDB's ``ST_Read``
-    reads a local path far more reliably than ``/vsigs/`` (which needs GDAL-specific GCS
-    credentials), so for a ``gs://`` input we download every file that shares the ``.shp``
-    basename into a temp directory and return that local ``.shp``.
-    """
-    if not path.startswith("gs://"):
-        return path
-
-    import gcsfs
-
-    fs = gcsfs.GCSFileSystem()
-    bucket_path = path[len("gs://") :]
-    directory, shp_name = bucket_path.rsplit("/", 1)
-    stem = shp_name.rsplit(".", 1)[0]
-    tmp_dir = Path(tempfile.mkdtemp(prefix="mtbs_"))
-    local_shp: str | None = None
-    for remote in fs.ls(directory):
-        name = remote.rsplit("/", 1)[-1]
-        if name.rsplit(".", 1)[0] != stem:
-            continue
-        local = (tmp_dir / name).as_posix()
-        fs.get(remote, local)
-        if name.lower().endswith(".shp"):
-            local_shp = local
-    if local_shp is None:
-        raise FileNotFoundError(f"No .shp found alongside {path}")
-    return local_shp
+DEFAULT_FIRES_SHP = DEFAULT_CONUS_PERIMETERS
 
 
 def _connect() -> duckdb.DuckDBPyConnection:
@@ -99,77 +68,6 @@ def build_utilities(conn: duckdb.DuckDBPyConnection, source_areas_geojson: str) 
         FROM ST_Read('{source_areas_geojson}')
         WHERE PWS_ID IS NOT NULL AND trim(PWS_ID) <> ''
         GROUP BY lower(PWS_ID)
-        """
-    )
-
-
-def build_wildfires(
-    conn: duckdb.DuckDBPyConnection,
-    mtbs_shp: str,
-    state_code: str = STATE_CODE,
-    incident_types: tuple[str, ...] = WILDFIRE_INCIDENT_TYPES,
-) -> None:
-    """Read MTBS perimeters for one state into one row per fire and register `fires_raw`.
-
-    Keeps only features whose `event_id` starts with the two-letter ``state_code`` and
-    whose `incid_type` is a true wildfire (prescribed/other burns excluded). Builds a
-    human-readable ``name-year`` slug id, deduping same-name/same-year collisions by
-    burned area so the widest perimeter keeps the unsuffixed id. The real MTBS
-    ``ig_date`` is carried through as the ignition date.
-    """
-    types_sql = ", ".join(f"'{incident_type}'" for incident_type in incident_types)
-    conn.execute(
-        f"""
-        CREATE OR REPLACE TEMP TABLE fires_raw AS
-        WITH src AS (
-            SELECT
-                nullif(trim(incid_name), '')          AS incident,
-                TRY_CAST(ig_date AS DATE)             AS ignition_date,
-                TRY_CAST(burnbndac AS DOUBLE)         AS acres,
-                ST_MakeValid(geom)                    AS geom
-            FROM ST_Read('{mtbs_shp}')
-            WHERE substr(upper(event_id), 1, 2) = '{state_code}'
-              AND upper(trim(incid_type)) IN ({types_sql})
-        ),
-        valid AS (
-            SELECT
-                incident,
-                ignition_date,
-                EXTRACT(YEAR FROM ignition_date)::INTEGER         AS year,
-                acres,
-                geom
-            FROM src
-            WHERE ignition_date IS NOT NULL
-              AND EXTRACT(YEAR FROM ignition_date) BETWEEN {MIN_FIRE_YEAR} AND {MAX_FIRE_YEAR}
-        ),
-        slugged AS (
-            SELECT
-                coalesce(
-                    nullif(regexp_replace(lower(incident), '[^a-z0-9]+', '-', 'g'), ''),
-                    'fire'
-                )                                                AS base_slug,
-                coalesce(incident, 'Unnamed Fire')               AS name,
-                ignition_date, year, acres, geom
-            FROM valid
-        ),
-        ranked AS (
-            SELECT
-                base_slug || '-' || CAST(year AS VARCHAR)        AS base_id,
-                row_number() OVER (
-                    PARTITION BY base_slug || '-' || CAST(year AS VARCHAR)
-                    ORDER BY acres DESC NULLS LAST
-                )                                                AS rn,
-                count(*) OVER (
-                    PARTITION BY base_slug || '-' || CAST(year AS VARCHAR)
-                )                                                AS grp_n,
-                name, ignition_date, year, acres, geom
-            FROM slugged
-        )
-        SELECT
-            CASE WHEN grp_n > 1 THEN base_id || '-' || CAST(rn AS VARCHAR) ELSE base_id END
-                AS wildfire_id,
-            name, ignition_date, year, acres, 'MTBS' AS source, geom
-        FROM ranked
         """
     )
 
@@ -203,7 +101,7 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
                 ignition_date,
                 CAST(NULL AS DATE)    AS containment_date,
                 acres,
-                '{STATE_CODE}'        AS state,
+                state,
                 ''                    AS county,
                 ST_X(ST_Centroid(geom)) AS centroid_lon,
                 ST_Y(ST_Centroid(geom)) AS centroid_lat,
@@ -296,7 +194,12 @@ def ingest(raw_dir: Path, data_root: Path, fires_shp: str = DEFAULT_FIRES_SHP) -
     print("  utilities:", conn.execute("SELECT count(*) FROM util_diss").fetchone()[0], flush=True)
 
     print("Reading MTBS wildfire perimeters...", flush=True)
-    build_wildfires(conn, local_shp)
+    build_wildfires(
+        conn,
+        local_shp,
+        state_codes=(STATE_CODE,),
+        incident_types=WILDFIRE_INCIDENT_TYPES,
+    )
     print("  wildfires:", conn.execute("SELECT count(*) FROM fires_raw").fetchone()[0], flush=True)
 
     print("Writing tables + computing overlap pairs (this is the slow step)...", flush=True)
@@ -315,7 +218,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--fires-shp",
         default=DEFAULT_FIRES_SHP,
-        help="MTBS perimeter shapefile (.shp) path; local or gs:// URI.",
+        help="MTBS perimeter .shp/.zip source or containing prefix; local or gs://.",
     )
     args = parser.parse_args()
     ingest(Path(args.raw_dir), Path(args.data_root), args.fires_shp)

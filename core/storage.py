@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import quote
 
 from google.cloud import storage as gcs_storage
 
@@ -17,14 +19,23 @@ class Storage(Protocol):
     def uri_for(self, key: str) -> str:
         """Return URI for a relative object key."""
 
+    def public_url_for(self, key: str) -> str:
+        """Return a browser-readable URL for a relative object key."""
+
     def read_bytes(self, key: str) -> bytes:
         """Read object bytes from storage for a key."""
+
+    def download_to_path(self, key: str, destination: Path) -> None:
+        """Stream an object to a local path."""
 
     def exists(self, key: str) -> bool:
         """Return whether object key exists in storage."""
 
     def dataset_uri(self, name: str) -> str:
         """Return URI for a named dataset path under tables/."""
+
+    def list_uris(self, prefix: str, suffixes: tuple[str, ...] = ()) -> list[str]:
+        """List asset URIs below a relative storage prefix."""
 
 
 @dataclass
@@ -46,9 +57,18 @@ class LocalStorage:
         """
         return self._path_for(key).as_posix()
 
+    def public_url_for(self, key: str) -> str:
+        """Return a file URL for a local asset."""
+        return self._path_for(key).as_uri()
+
     def read_bytes(self, key: str) -> bytes:
         """Read bytes from local file key."""
         return self._path_for(key).read_bytes()
+
+    def download_to_path(self, key: str, destination: Path) -> None:
+        """Copy a local object to the requested path."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self._path_for(key), destination)
 
     def exists(self, key: str) -> bool:
         """Check whether local file exists."""
@@ -57,6 +77,22 @@ class LocalStorage:
     def dataset_uri(self, name: str) -> str:
         """Return dataset URI under local `tables/` prefix."""
         return self.uri_for(f"tables/{name}.parquet")
+
+    def list_uris(self, prefix: str, suffixes: tuple[str, ...] = ()) -> list[str]:
+        """List local asset paths below a relative prefix."""
+        root = self._path_for(prefix)
+        if not root.exists():
+            return []
+        normalized_suffixes = tuple(suffix.lower() for suffix in suffixes)
+        return sorted(
+            path.resolve().as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+            and (
+                not normalized_suffixes
+                or path.suffix.lower() in normalized_suffixes
+            )
+        )
 
 
 @dataclass
@@ -94,10 +130,21 @@ class GCSStorage:
         """Return canonical `gs://` URI for object key, including any bucket prefix."""
         return f"gs://{self.bucket}/{self._object_key(key)}"
 
+    def public_url_for(self, key: str) -> str:
+        """Return the public HTTPS URL for a GCS object."""
+        object_key = quote(self._object_key(key), safe="/")
+        return f"https://storage.googleapis.com/{quote(self.bucket, safe='')}/{object_key}"
+
     def read_bytes(self, key: str) -> bytes:
         """Read bytes from GCS object key."""
         blob = self.client.bucket(self.bucket).blob(self._object_key(key))
         return blob.download_as_bytes()
+
+    def download_to_path(self, key: str, destination: Path) -> None:
+        """Stream a GCS object directly to disk without buffering it in memory."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        blob = self.client.bucket(self.bucket).blob(self._object_key(key))
+        blob.download_to_filename(destination)
 
     def exists(self, key: str) -> bool:
         """Check whether a GCS object exists."""
@@ -107,6 +154,20 @@ class GCSStorage:
     def dataset_uri(self, name: str) -> str:
         """Return dataset URI under `tables/` prefix."""
         return self.uri_for(f"tables/{name}.parquet")
+
+    def list_uris(self, prefix: str, suffixes: tuple[str, ...] = ()) -> list[str]:
+        """List GCS asset URIs below a relative prefix."""
+        object_prefix = self._object_key(prefix).rstrip("/") + "/"
+        normalized_suffixes = tuple(suffix.lower() for suffix in suffixes)
+        return sorted(
+            f"gs://{self.bucket}/{blob.name}"
+            for blob in self.client.list_blobs(self.bucket, prefix=object_prefix)
+            if not blob.name.endswith("/")
+            and (
+                not normalized_suffixes
+                or Path(blob.name).suffix.lower() in normalized_suffixes
+            )
+        )
 
 
 def get_storage() -> Storage:

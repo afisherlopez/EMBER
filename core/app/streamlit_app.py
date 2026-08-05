@@ -35,12 +35,14 @@ from core.gcp_auth import bootstrap_gcp_credentials
 bootstrap_gcp_credentials()
 
 from core.app.admin_view import admin_password_is_configured, admin_password_matches, render_admin_view
+from core.app.case_study_view import render_case_study_view
+from core.app.economic_impact import render_economic_impact_data
 from core.app.export import build_export_html, render_export_button
 from core.app.features import format_scalar_value, render_feature_panel
 from core.app.fire_view import render_fire_view
-from core.app.map_view import render_map
-from core.app.range_view import render_range_view
+from core.app.map_view import render_map, render_overview_map
 from core.app.selector_controls import render_selectors
+from core.burn_severity import load_burn_severity_assets
 from core.catalog import Catalog
 from core.models import MetricDefinition, MetricValue, RasterAsset, Utility, Wildfire
 from core.registry import load_registries
@@ -83,9 +85,27 @@ def cached_pair_data(utility_id: str, wildfire_id: str, metric_key: str, kind: s
 
 
 @st.cache_data
+def cached_case_study_costs(utility_id: str, wildfire_id: str):
+    """Cache pair-scoped economic-impact source rows."""
+    return cached_catalog().list_case_study_costs(utility_id, wildfire_id)
+
+
+@st.cache_data
 def cached_geojson(table: str, row_id: str) -> dict:
     """Cache simplified GeoJSON lookups for selected utility/fire rows."""
     return cached_catalog().get_geojson(table=table, row_id=row_id, simplify_tolerance=settings.geojson_simplify_tolerance)
+
+
+@st.cache_data
+def cached_overview_geojson_v2(table: str) -> dict:
+    """Cache all geometries used by the shared map layers."""
+    return cached_catalog().get_overview_geojson(table)
+
+
+@st.cache_data(ttl=300)
+def cached_burn_severity_assets() -> dict[int, str]:
+    """Load annual burn-severity COGs, refreshing periodically after publication."""
+    return load_burn_severity_assets(cached_storage())
 
 
 def _index_by_id(utilities: list[Utility], wildfires: list[Wildfire]) -> tuple[dict[str, Utility], dict[str, Wildfire]]:
@@ -203,10 +223,36 @@ def _render_admin_launcher(current_view_mode: str) -> None:
         _render_admin_login_dialog()
 
 
+def _render_data_sources(*, compact: bool = False) -> None:
+    """Render the user-editable data-source copy at the bottom of each view."""
+    source_path = _PROJECT_ROOT / "config" / "data_sources.md"
+    if not compact:
+        st.divider()
+    st.markdown(
+        '<h2 style="font-size: 1rem; margin: 0 0 0.5rem 0;">DATA SOURCES</h2>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(source_path.read_text(encoding="utf-8"))
+
+
 def main() -> None:
     """Render the EMBER dashboard."""
     st.title("EMBER")
     st.caption("Environmental and economic Measurements of Burn Events on water Resources")
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stCustomComponentV1"]:focus,
+        div[data-testid="stCustomComponentV1"]:focus-within,
+        div[data-testid="stCustomComponentV1"] iframe:focus,
+        div[data-testid="stCustomComponentV1"] iframe:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     metrics_registry, profiles_registry = cached_registries()
     catalog = cached_catalog()
@@ -230,26 +276,69 @@ def main() -> None:
     )
     _render_admin_launcher(view_mode)
 
+    def render_overview() -> None:
+        st.subheader("Map layers")
+        severity_assets = cached_burn_severity_assets()
+        render_overview_map(
+            cached_overview_geojson_v2("utilities"),
+            cached_overview_geojson_v2("wildfires"),
+            sorted(severity_assets, reverse=True),
+            map_key=f"overview_map_{view_mode}",
+        )
+
     if view_mode == "Search by utility":
-        # The range view queries fires by overlap pair, so it never needs the full
+        # This view queries fires by overlap pair, so it never needs the full
         # 8,920-row wildfire list that the single-fire selector relies on.
-        render_range_view(catalog, utilities)
+        render_case_study_view(
+            catalog,
+            utilities,
+            render_overview,
+            set(cached_burn_severity_assets()),
+        )
+        _render_data_sources()
         return
 
     if view_mode == "Search by wildfire":
-        render_fire_view(catalog, catalog.list_wildfires())
+        render_fire_view(
+            catalog,
+            catalog.list_wildfires(),
+            render_overview,
+            set(cached_burn_severity_assets()),
+        )
+        _render_data_sources()
         return
 
     wildfires = catalog.list_wildfires()
     utility_by_id, wildfire_by_id = _index_by_id(utilities, wildfires)
 
-    selector_state = render_selectors(profiles_registry, utilities, wildfires)
+    available_case_studies = catalog.list_case_studies()
+    selector_state = render_selectors(
+        profiles_registry,
+        utilities,
+        wildfires,
+        available_case_studies,
+    )
     if not selector_state.utility_id or not selector_state.wildfire_id:
-        st.info("Select both a water utility and a wildfire to load the dashboard.")
+        st.info(
+            "Choose an uploaded case study, or select both a water utility and wildfire."
+        )
+        render_overview()
+        _render_data_sources(compact=True)
         return
 
     selected_utility = utility_by_id[selector_state.utility_id]
     selected_wildfire = wildfire_by_id[selector_state.wildfire_id]
+    selected_fire_year = (
+        selected_wildfire.ignition_date.year
+        if selected_wildfire.ignition_date is not None
+        else None
+    )
+    available_severity_years = set(cached_burn_severity_assets())
+    burn_severity_year = (
+        selected_fire_year
+        if selected_fire_year in available_severity_years
+        else None
+    )
 
     selected_profile = profiles_registry[selector_state.profile_key]
     profile_metrics = [metrics_registry[metric_key] for metric_key in selected_profile.features]
@@ -303,8 +392,17 @@ def main() -> None:
 
     utility_geojson = cached_geojson("utilities", selector_state.utility_id)
     wildfire_geojson = cached_geojson("wildfires", selector_state.wildfire_id)
+    case_study_costs = cached_case_study_costs(
+        selector_state.utility_id,
+        selector_state.wildfire_id,
+    )
+    map_height = min(500, 240 + 80 * len(profile_metrics))
 
-    map_col, panel_col = st.columns([3, 2], gap="large")
+    map_col, panel_col = st.columns(
+        [3, 2],
+        gap="large",
+        vertical_alignment="top",
+    )
     with map_col:
         render_map(
             utility=selected_utility,
@@ -314,6 +412,8 @@ def main() -> None:
             raster_metric=raster_metric,
             raster_asset=raster_payload,
             raster_state=raster_state,  # type: ignore[arg-type]
+            burn_severity_year=burn_severity_year,
+            height=map_height,
         )
 
     with panel_col:
@@ -335,6 +435,14 @@ def main() -> None:
             feature_rows=feature_rows,  # type: ignore[arg-type]
         )
         render_export_button(export_html, selector_state.utility_id, selector_state.wildfire_id)
+
+    render_economic_impact_data(
+        case_study_costs,
+        cached_storage(),
+        selector_state.utility_id,
+        selector_state.wildfire_id,
+    )
+    _render_data_sources(compact=True)
 
 
 if __name__ == "__main__":
