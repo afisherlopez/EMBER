@@ -11,7 +11,7 @@ from core.storage import LocalStorage
 from scripts.bootstrap_sample_data import bootstrap_sample_data
 
 
-def test_case_study_upload_replaces_only_the_selected_pair(
+def test_case_study_upload_overwrites_existing_selected_pair(
     tmp_path: Path, monkeypatch
 ) -> None:
     bootstrap_sample_data(tmp_path)
@@ -24,15 +24,15 @@ def test_case_study_upload_replaces_only_the_selected_pair(
     monkeypatch.setattr(admin_data, "_local_path", lambda key: tmp_path / key)
 
     result = replace_case_study_costs(
-        utility_id="foothills-utility",
-        wildfire_id="camp-2018",
+        utility_id="denver-water",
+        wildfire_id="hayman-2002",
         rows=uploaded_rows,
     )
 
     catalog = Catalog(LocalStorage(tmp_path))
-    original_rows = catalog.list_case_study_costs("denver-water", "hayman-2002")
-    replaced_rows = catalog.list_case_study_costs("foothills-utility", "camp-2018")
-    assert len(original_rows) == 1
+    replaced_rows = catalog.list_case_study_costs("denver-water", "hayman-2002")
+    assert len(replaced_rows) == 2
     assert [row.start_year for row in replaced_rows] == [2020, 2021]
+    assert all(row.description != "Sample watershed recovery cost" for row in replaced_rows)
     assert result.backup_uri is not None
     assert Path(result.backup_uri).exists()

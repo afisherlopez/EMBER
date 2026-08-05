@@ -8,7 +8,7 @@ import streamlit as st
 
 from core.case_study_costs import (
     case_study_costs_to_csv,
-    source_pdf_key,
+    source_pdf_references,
     yearly_cost_breakdown,
 )
 from core.models import CaseStudyCost
@@ -94,7 +94,21 @@ def _render_linked_table(rows: list[CaseStudyCost], storage: Storage) -> None:
     ]
     body_rows = []
     for row in rows:
-        source_url = storage.public_url_for(source_pdf_key(row.source))
+        source_links = []
+        for source_label, source_key in source_pdf_references(row.source):
+            source_url = storage.public_url_for(source_key)
+            source_links.append(
+                f'<a href="{escape(source_url, quote=True)}" target="_blank" '
+                f'rel="noopener noreferrer">{escape(source_label)}</a>'
+            )
+        escaped_notes = escape(row.description_and_notes)
+        notes_cell = (
+            '<span class="ember-description-tooltip" tabindex="0">'
+            f"{escaped_notes}"
+            '<span class="ember-description-tooltip-content" role="tooltip">'
+            f"{escaped_notes}"
+            "</span></span>"
+        )
         values = [
             escape(row.item_type),
             str(row.start_year),
@@ -103,12 +117,9 @@ def _render_linked_table(rows: list[CaseStudyCost], storage: Storage) -> None:
             f"${row.raw_cost:,.2f}",
             f"${row.inflation_adjusted_cost:,.2f}",
             escape(row.contributing_fires),
-            (
-                f'<a href="{escape(source_url, quote=True)}" target="_blank" '
-                f'rel="noopener noreferrer">{escape(row.source)}</a>'
-            ),
+            ", ".join(source_links),
             escape(row.method),
-            escape(row.description_and_notes),
+            notes_cell,
         ]
         body_rows.append(
             "<tr>" + "".join(f"<td>{value}</td>" for value in values) + "</tr>"
@@ -138,6 +149,40 @@ def _render_linked_table(rows: list[CaseStudyCost], storage: Storage) -> None:
             vertical-align: top;
           }}
           .ember-cost-table th {{ background: rgba(128, 128, 128, 0.12); }}
+          .ember-description-tooltip {{
+            position: relative;
+            display: inline-block;
+            cursor: help;
+            text-decoration: underline dotted;
+            text-underline-offset: 3px;
+          }}
+          .ember-description-tooltip-content {{
+            visibility: hidden;
+            opacity: 0;
+            position: absolute;
+            z-index: 10000;
+            top: calc(100% + 0.4rem);
+            left: 0;
+            width: min(360px, 70vw);
+            padding: 0.75rem;
+            border: 1px solid #d0d0d0;
+            border-radius: 0.5rem;
+            background: #fff;
+            color: #222;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+            font-size: 0.9rem;
+            font-weight: normal;
+            line-height: 1.45;
+            text-align: left;
+            white-space: normal;
+            pointer-events: none;
+            transition: opacity 120ms ease-in-out;
+          }}
+          .ember-description-tooltip:hover .ember-description-tooltip-content,
+          .ember-description-tooltip:focus .ember-description-tooltip-content {{
+            visibility: visible;
+            opacity: 1;
+          }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -157,9 +202,9 @@ def render_economic_impact_data(
     st.divider()
     st.subheader("Economic impact over time")
     st.caption(
-        "Bars stack all inflation-adjusted rows by Description. Hover for the yearly "
-        "total and category breakdown. Rows spanning multiple years are assigned to "
-        "their Start Year."
+        "Each Cost row sets the full yearly total. Other rows, such as Aid, are shown "
+        "as components of that total rather than added to it. Hover for the yearly total "
+        "and category breakdown. Rows spanning multiple years use their Start Year."
     )
     _render_cost_chart(rows)
 

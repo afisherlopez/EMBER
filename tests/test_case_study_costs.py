@@ -8,6 +8,7 @@ from core.case_study_costs import (
     CaseStudyCSVError,
     parse_case_study_csv,
     source_pdf_key,
+    source_pdf_references,
     yearly_cost_breakdown,
     yearly_cost_totals,
 )
@@ -64,10 +65,13 @@ def test_yearly_totals_use_only_inflation_adjusted_cost_rows() -> None:
 
 def test_yearly_breakdown_contains_category_amounts_and_total() -> None:
     rows = [
-        _row(description="Recovery", inflation_adjusted_cost=125.0),
-        _row(description="Recovery", inflation_adjusted_cost=75.0),
-        _row(description="Monitoring", inflation_adjusted_cost=50.0),
-        _row(item_type="Aid", description="Grant", inflation_adjusted_cost=500.0),
+        _row(description="Recovery", inflation_adjusted_cost=1_000.0),
+        _row(
+            item_type="Aid",
+            description="Monitoring",
+            inflation_adjusted_cost=100.0,
+        ),
+        _row(item_type="Aid", description="Grant", inflation_adjusted_cost=200.0),
     ]
 
     chart_rows = yearly_cost_breakdown(rows)
@@ -76,33 +80,39 @@ def test_yearly_breakdown_contains_category_amounts_and_total() -> None:
         {
             "Year": "2020",
             "Category": "Grant",
-            "Amount": 500.0,
-            "Total": 750.0,
+            "Amount": 200.0,
+            "Total": 1_000.0,
             "Breakdown": (
-                "Grant: $500.00\nMonitoring: $50.00\nRecovery: $200.00"
+                "Grant: $200.00\nMonitoring: $100.00\nRecovery: $700.00"
             ),
         },
         {
             "Year": "2020",
             "Category": "Monitoring",
-            "Amount": 50.0,
-            "Total": 750.0,
+            "Amount": 100.0,
+            "Total": 1_000.0,
             "Breakdown": (
-                "Grant: $500.00\nMonitoring: $50.00\nRecovery: $200.00"
+                "Grant: $200.00\nMonitoring: $100.00\nRecovery: $700.00"
             ),
         },
         {
             "Year": "2020",
             "Category": "Recovery",
-            "Amount": 200.0,
-            "Total": 750.0,
+            "Amount": 700.0,
+            "Total": 1_000.0,
             "Breakdown": (
-                "Grant: $500.00\nMonitoring: $50.00\nRecovery: $200.00"
+                "Grant: $200.00\nMonitoring: $100.00\nRecovery: $700.00"
             ),
         },
     ]
 
 
 def test_source_name_maps_to_case_studies_pdf() -> None:
-    assert source_pdf_key("EWEB_Report 2020") == "case_studies/EWEB_Report 2020.pdf"
+    assert source_pdf_key("EWEB_Report 2020") == (
+        "case_studies/EWEB/EWEB_Report_2020.pdf"
+    )
     assert source_pdf_key("report.PDF") == "case_studies/report.PDF"
+    assert source_pdf_references("EWEB_Report_2020, EWEB_Report_2021") == [
+        ("EWEB_Report_2020", "case_studies/EWEB/EWEB_Report_2020.pdf"),
+        ("EWEB_Report_2021", "case_studies/EWEB/EWEB_Report_2021.pdf"),
+    ]

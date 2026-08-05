@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from dataclasses import dataclass
 from pathlib import PurePath
 
@@ -135,6 +136,28 @@ def parse_case_study_csv(data: bytes) -> list[CaseStudyCostInput]:
         )
     if not rows:
         raise CaseStudyCSVError("The CSV contains no data rows.")
+    rows_by_year: dict[int, list[CaseStudyCostInput]] = {}
+    for row in rows:
+        rows_by_year.setdefault(row.start_year, []).append(row)
+    for year, year_rows in rows_by_year.items():
+        total_rows = [
+            row for row in year_rows if row.item_type.strip().casefold() == "cost"
+        ]
+        if len(total_rows) > 1:
+            raise CaseStudyCSVError(
+                f"Year {year}: only one `Cost` row is allowed because it represents "
+                "the full yearly total."
+            )
+        if total_rows:
+            component_total = sum(
+                row.inflation_adjusted_cost
+                for row in year_rows
+                if row.item_type.strip().casefold() != "cost"
+            )
+            if component_total > total_rows[0].inflation_adjusted_cost:
+                raise CaseStudyCSVError(
+                    f"Year {year}: non-Cost components exceed the Cost total."
+                )
     return rows
 
 
@@ -174,18 +197,39 @@ def yearly_cost_totals(rows: list[CaseStudyCost]) -> dict[int, float]:
 
 
 def yearly_cost_breakdown(rows: list[CaseStudyCost]) -> list[dict[str, object]]:
-    """Build stacked-chart rows for every item type, grouped by Description."""
-    by_year: dict[int, dict[str, float]] = {}
+    """Build yearly stacks where Cost is the total and other rows are components."""
+    rows_by_year: dict[int, list[CaseStudyCost]] = {}
     for row in rows:
-        category = row.description.strip() or "Uncategorized"
-        categories = by_year.setdefault(row.start_year, {})
-        categories[category] = (
-            categories.get(category, 0.0) + row.inflation_adjusted_cost
-        )
+        rows_by_year.setdefault(row.start_year, []).append(row)
 
     chart_rows: list[dict[str, object]] = []
-    for year, categories in sorted(by_year.items()):
-        total = sum(categories.values())
+    for year, year_rows in sorted(rows_by_year.items()):
+        cost_rows = [
+            row
+            for row in year_rows
+            if row.item_type.strip().casefold() == "cost"
+        ]
+        component_rows = [
+            row
+            for row in year_rows
+            if row.item_type.strip().casefold() != "cost"
+        ]
+        categories: dict[str, float] = {}
+        for row in component_rows:
+            category = row.description.strip() or "Uncategorized"
+            categories[category] = (
+                categories.get(category, 0.0) + row.inflation_adjusted_cost
+            )
+
+        if cost_rows:
+            total = cost_rows[0].inflation_adjusted_cost
+            remainder = total - sum(categories.values())
+            if remainder > 0:
+                category = cost_rows[0].description.strip() or "Other cost"
+                categories[category] = categories.get(category, 0.0) + remainder
+        else:
+            total = sum(categories.values())
+
         breakdown = "\n".join(
             f"{category}: ${amount:,.2f}"
             for category, amount in sorted(categories.items())
@@ -205,7 +249,18 @@ def yearly_cost_breakdown(rows: list[CaseStudyCost]) -> list[dict[str, object]]:
 
 def source_pdf_key(source: str) -> str:
     """Map a validated Source value to its PDF under the case_studies folder."""
-    filename = PurePath(source).name
+    filename = re.sub(r"\s+", "_", PurePath(source.strip()).name)
     if not filename.lower().endswith(".pdf"):
         filename += ".pdf"
-    return f"case_studies/{filename}"
+    folder = filename.split("_", 1)[0] if "_" in filename else ""
+    return f"case_studies/{folder}/{filename}" if folder else f"case_studies/{filename}"
+
+
+def source_pdf_references(source: str) -> list[tuple[str, str]]:
+    """Split a Source cell into display labels and corresponding PDF object keys."""
+    references = []
+    for item in source.split(","):
+        label = item.strip()
+        if label:
+            references.append((label, source_pdf_key(label)))
+    return references

@@ -16,7 +16,7 @@ from core.admin_data import (
 )
 from core.case_study_costs import CaseStudyCSVError, parse_case_study_csv
 from core.catalog import Catalog
-from core.models import MetricDefinition, Utility, Wildfire
+from core.models import CaseStudy, MetricDefinition, Utility, Wildfire
 from core.settings import settings
 
 
@@ -198,6 +198,7 @@ def _render_raster_asset_form(
 def _render_case_study_cost_form(
     utilities: list[Utility],
     wildfires: list[Wildfire],
+    case_studies: list[CaseStudy],
 ) -> None:
     st.subheader("Case Study Cost Data")
     st.caption(
@@ -206,11 +207,38 @@ def _render_case_study_cost_form(
     )
     utility_labels = _utility_options(utilities)
     wildfire_labels = _wildfire_options(wildfires)
+    destination_options: dict[str, CaseStudy | None] = {
+        (
+            f"Replace: {case_study.utility_name} × {case_study.wildfire_name} "
+            f"({case_study.ignition_year or 'year unknown'})"
+        ): case_study
+        for case_study in case_studies
+    }
+    destination_options["Create a new utility × wildfire pairing"] = None
+    destination_label = st.selectbox(
+        "Upload destination",
+        list(destination_options),
+        help=(
+            "Choosing an existing case study replaces every previously uploaded row "
+            "for that pair."
+        ),
+    )
+    selected_case_study = destination_options[destination_label]
 
     with st.form("admin_case_study_costs"):
-        utility, wildfire = _selected_pair(utility_labels, wildfire_labels)
+        if selected_case_study is None:
+            utility, wildfire = _selected_pair(utility_labels, wildfire_labels)
+            utility_id = utility.utility_id
+            wildfire_id = wildfire.wildfire_id
+        else:
+            utility_id = selected_case_study.utility_id
+            wildfire_id = selected_case_study.wildfire_id
+            st.write(
+                f"Replacing **{selected_case_study.utility_name} × "
+                f"{selected_case_study.wildfire_name}**"
+            )
         uploaded_file = st.file_uploader("Case-study CSV", type=["csv"])
-        submitted = st.form_submit_button("Save case-study cost data")
+        submitted = st.form_submit_button("Replace case-study cost data")
 
     if not submitted:
         return
@@ -223,11 +251,14 @@ def _render_case_study_cost_form(
         st.error(str(exc))
         return
     result = replace_case_study_costs(
-        utility_id=utility.utility_id,
-        wildfire_id=wildfire.wildfire_id,
+        utility_id=utility_id,
+        wildfire_id=wildfire_id,
         rows=rows,
     )
-    st.success(f"Validated and stored {len(rows)} row(s).")
+    st.success(
+        f"Replaced the existing data with {len(rows)} uploaded row(s) for "
+        f"`{utility_id}` × `{wildfire_id}`."
+    )
     _show_write_result(result)
 
 
@@ -242,13 +273,14 @@ def render_admin_view(catalog: Catalog, metrics: dict[str, MetricDefinition]) ->
 
     utilities = catalog.list_utilities()
     wildfires = catalog.list_wildfires()
+    case_studies = catalog.list_case_studies()
     scalar_tab, costs_tab, pair_tab, raster_tab = st.tabs(
         ["Scalar metrics", "Case study costs", "Pair summaries", "Raster assets"]
     )
     with scalar_tab:
         _render_scalar_metric_form(utilities, wildfires, metrics)
     with costs_tab:
-        _render_case_study_cost_form(utilities, wildfires)
+        _render_case_study_cost_form(utilities, wildfires, case_studies)
     with pair_tab:
         _render_pair_summary_form(utilities, wildfires)
     with raster_tab:
