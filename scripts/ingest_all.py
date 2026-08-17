@@ -18,11 +18,27 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.manual_utilities import (  # noqa: E402
+    DENVER_WATER_ID,
+    DENVER_WATER_LATITUDE,
+    DENVER_WATER_LONGITUDE,
+    DENVER_WATER_NAME,
+    DENVER_WATER_STATE,
+)
 from scripts.ingest_mtbs import (  # noqa: E402
     DEFAULT_CONUS_PERIMETERS,
     DEFAULT_STATE_CODES,
     _resolve_shapefile,
     build_wildfires,
+)
+from scripts.ingest_california import (  # noqa: E402
+    DEFAULT_CA_BOUNDARIES,
+    DEFAULT_CA_CONNECTIONS,
+    DEFAULT_CA_SOURCE_POINTS,
+    DEFAULT_CA_SYSTEM_POINTS,
+    build_california_data,
+    build_california_fire_links,
+    resolve_data_file as resolve_california_file,
 )
 from scripts.ingest_oregon import (  # noqa: E402
     _connect,
@@ -36,10 +52,19 @@ from scripts.ingest_washington import (  # noqa: E402
 )
 
 DEFAULT_WATER_SOURCE_ROOT = "gs://data_main_gcs/EMBER/water_source_areas"
-EXPECTED_OREGON_GEOJSON = "water_source_areas.geojson"
+EXPECTED_OREGON_GEOJSONS = (
+    "Oregon_Surface_Water_Drinking_Water_Source_Areas.geojson",
+    "water_source_areas.geojson",
+)
 DEFAULT_BUCKET = "data_main_gcs"
 DEFAULT_PREFIX = "EMBER"
-PUBLISHED_TABLES = ("utilities", "wildfires", "pair_summary")
+PUBLISHED_TABLES = (
+    "utilities",
+    "wildfires",
+    "pair_summary",
+    "utility_sources",
+    "source_fire_locations",
+)
 
 
 def _resolve_oregon_geojson(source: str) -> str:
@@ -48,7 +73,12 @@ def _resolve_oregon_geojson(source: str) -> str:
         local = Path(source).expanduser()
         if local.is_dir():
             matches = sorted(local.rglob("*.geojson"))
-            preferred = [path for path in matches if path.name == EXPECTED_OREGON_GEOJSON]
+            preferred = [
+                path
+                for expected_name in EXPECTED_OREGON_GEOJSONS
+                for path in matches
+                if path.name == expected_name
+            ]
             choices = preferred or matches
             if len(choices) != 1:
                 raise ValueError(f"Expected one Oregon GeoJSON under {source}, found {len(choices)}.")
@@ -70,7 +100,10 @@ def _resolve_oregon_geojson(source: str) -> str:
             if path.lower().endswith((".geojson", ".json"))
         ]
         preferred = [
-            path for path in matches if Path(path).name == EXPECTED_OREGON_GEOJSON
+            path
+            for expected_name in EXPECTED_OREGON_GEOJSONS
+            for path in matches
+            if Path(path).name == expected_name
         ]
         choices = preferred or matches
         if len(choices) != 1:
@@ -109,11 +142,16 @@ def _publish_tables(data_root: Path, bucket_name: str, prefix: str) -> None:
             part for part in (cleaned_prefix, "tables", f"{table}.parquet") if part
         )
         blob = bucket.blob(key)
-        blob.reload()
         live_blobs[table] = blob
-        generations[table] = int(blob.generation)
+        if blob.exists(client):
+            blob.reload()
+            generations[table] = int(blob.generation)
+        else:
+            generations[table] = 0
 
     for table in PUBLISHED_TABLES:
+        if generations[table] == 0:
+            continue
         live_blob = live_blobs[table]
         backup_key = "/".join(
             part
@@ -147,6 +185,10 @@ def ingest_all(
     *,
     oregon_geojson: str,
     washington_gdb: str,
+    california_boundaries: str,
+    california_connections: str,
+    california_source_points: str,
+    california_system_points: str,
     conus_perimeters: str,
     data_root: Path,
     states: tuple[str, ...] = DEFAULT_STATE_CODES,
@@ -171,13 +213,51 @@ def ingest_all(
         "SELECT count(*) FROM utilities_washington"
     ).fetchone()[0]
 
+    resolved_ca_boundaries = resolve_california_file(california_boundaries)
+    resolved_ca_connections = resolve_california_file(california_connections)
+    resolved_ca_source_points = resolve_california_file(california_source_points)
+    resolved_ca_system_points = resolve_california_file(california_system_points)
+    print(f"Reading California service areas: {resolved_ca_boundaries}", flush=True)
+    print(f"Reading California source connections: {resolved_ca_connections}", flush=True)
+    build_california_data(
+        conn,
+        resolved_ca_boundaries.as_posix(),
+        resolved_ca_connections.as_posix(),
+        resolved_ca_source_points.as_posix(),
+        resolved_ca_system_points.as_posix(),
+    )
+    california_count = conn.execute(
+        "SELECT count(*) FROM utilities_california"
+    ).fetchone()[0]
+
     conn.execute(
         """
         CREATE OR REPLACE TEMP TABLE util_diss AS
         SELECT * FROM utilities_oregon
         UNION ALL BY NAME
         SELECT * FROM utilities_washington
+        UNION ALL BY NAME
+        SELECT * FROM utilities_california
         """
+    )
+    conn.execute(
+        """
+        INSERT INTO util_diss BY NAME
+        SELECT
+            ? AS utility_id,
+            ? AS name,
+            ? AS state,
+            'Service location only' AS source_area_name,
+            CAST(NULL AS GEOMETRY) AS geom,
+            ST_Point(?, ?) AS service_geom
+        """,
+        [
+            DENVER_WATER_ID,
+            DENVER_WATER_NAME,
+            DENVER_WATER_STATE,
+            DENVER_WATER_LONGITUDE,
+            DENVER_WATER_LATITUDE,
+        ],
     )
     duplicate_utilities = conn.execute(
         """
@@ -190,7 +270,8 @@ def ingest_all(
         raise ValueError(f"Combined utilities contain {duplicate_utilities} duplicate IDs.")
     print(
         f"Utilities: Oregon={oregon_count:,}, Washington={washington_count:,}, "
-        f"total={oregon_count + washington_count:,}",
+        f"California={california_count:,}, manual=1, "
+        f"total={oregon_count + washington_count + california_count + 1:,}",
         flush=True,
     )
 
@@ -198,6 +279,7 @@ def ingest_all(
     local_shp = _resolve_shapefile(conus_perimeters)
     print(f"Loading Western wildfire states: {', '.join(states)}", flush=True)
     build_wildfires(conn, local_shp, state_codes=states)
+    build_california_fire_links(conn)
     wildfire_count = conn.execute("SELECT count(*) FROM fires_raw").fetchone()[0]
     wildfire_states = [
         row[0]
@@ -239,6 +321,26 @@ if __name__ == "__main__":
         help="Washington DOH FileGDB folder; local or gs://.",
     )
     parser.add_argument(
+        "--california-boundaries",
+        default=DEFAULT_CA_BOUNDARIES,
+        help="California utility service-area GeoJSON/JSON file; local or gs://.",
+    )
+    parser.add_argument(
+        "--california-connections",
+        default=DEFAULT_CA_CONNECTIONS,
+        help="California utility-source connection CSV file; local or gs://.",
+    )
+    parser.add_argument(
+        "--california-source-points",
+        default=DEFAULT_CA_SOURCE_POINTS,
+        help="California natural-source point GeoJSON or ArcGIS query URL.",
+    )
+    parser.add_argument(
+        "--california-system-points",
+        default=DEFAULT_CA_SYSTEM_POINTS,
+        help="California water-system point GeoJSON or ArcGIS query URL.",
+    )
+    parser.add_argument(
         "--conus-perimeters",
         default=DEFAULT_CONUS_PERIMETERS,
         help="MTBS CONUS .shp file or containing directory/prefix; local or gs://.",
@@ -265,6 +367,10 @@ if __name__ == "__main__":
     ingest_all(
         oregon_geojson=args.oregon_geojson,
         washington_gdb=args.washington_gdb,
+        california_boundaries=args.california_boundaries,
+        california_connections=args.california_connections,
+        california_source_points=args.california_source_points,
+        california_system_points=args.california_system_points,
         conus_perimeters=args.conus_perimeters,
         data_root=Path(args.data_root),
         states=args.states,

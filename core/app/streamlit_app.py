@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ except Exception:  # noqa: BLE001 - certs are best-effort; never block app start
     pass
 
 import streamlit as st
+from PIL import Image
 
 # Inject GCP credentials/config from Streamlit secrets before any core module imports
 # `core.settings` (whose pydantic Settings reads env at import time). No-op locally.
@@ -37,20 +39,20 @@ bootstrap_gcp_credentials()
 from core.app.admin_view import admin_password_is_configured, admin_password_matches, render_admin_view
 from core.app.case_study_view import render_case_study_view
 from core.app.economic_impact import render_economic_impact_data
-from core.app.export import build_export_html, render_export_button
-from core.app.features import format_scalar_value, render_feature_panel
 from core.app.fire_view import render_fire_view
-from core.app.map_view import render_map, render_overview_map
-from core.app.selector_controls import render_selectors
+from core.app.general_insights import render_general_insights
+from core.app.map_view import render_overview_map, render_utility_case_study_map
+from core.app.selector_controls import render_case_study_selector
 from core.burn_severity import load_burn_severity_assets
 from core.catalog import Catalog
-from core.models import MetricDefinition, MetricValue, RasterAsset, Utility, Wildfire
 from core.registry import load_registries
-from core.settings import settings
-from core.states import resolve_state, state_message
 from core.storage import get_storage
 
 st.set_page_config(page_title="EMBER", layout="wide")
+
+# Increment when the cached Catalog interface changes so Streamlit does not reuse
+# an instance created from an older hot-reloaded class definition.
+CATALOG_CACHE_VERSION = 2
 
 
 @st.cache_resource
@@ -60,8 +62,9 @@ def cached_storage():
 
 
 @st.cache_resource
-def cached_catalog() -> Catalog:
+def cached_catalog(cache_version: int) -> Catalog:
     """Create and hold one DuckDB catalog connection per process."""
+    del cache_version
     return Catalog(cached_storage())
 
 
@@ -73,80 +76,70 @@ def cached_registries():
 
 
 @st.cache_data
-def cached_pair_data(utility_id: str, wildfire_id: str, metric_key: str, kind: str):
-    """Cache pair-scoped query payloads by utility, wildfire, and metric."""
-    catalog = cached_catalog()
-    pair = catalog.get_pair_summary(utility_id, wildfire_id)
-    if kind == "scalar":
-        payload = catalog.get_scalar(utility_id, wildfire_id, metric_key)
-    else:
-        payload = catalog.get_raster_asset(utility_id, wildfire_id, metric_key)
-    return pair, payload
+def cached_case_study_costs(utility_id: str):
+    """Cache utility-scoped economic-impact source rows."""
+    return cached_catalog(CATALOG_CACHE_VERSION).list_case_study_costs(utility_id)
 
 
 @st.cache_data
-def cached_case_study_costs(utility_id: str, wildfire_id: str):
-    """Cache pair-scoped economic-impact source rows."""
-    return cached_catalog().list_case_study_costs(utility_id, wildfire_id)
+def cached_utility_geojson(utility_id: str, area_type: str) -> dict | None:
+    """Cache optional source-water or service-area geometry."""
+    return cached_catalog(CATALOG_CACHE_VERSION).get_utility_geojson(
+        utility_id, area_type
+    )
 
 
 @st.cache_data
-def cached_geojson(table: str, row_id: str) -> dict:
-    """Cache simplified GeoJSON lookups for selected utility/fire rows."""
-    return cached_catalog().get_geojson(table=table, row_id=row_id, simplify_tolerance=settings.geojson_simplify_tolerance)
+def cached_utility_sources(utility_id: str):
+    """Cache direct and upstream source connections for a utility."""
+    return cached_catalog(CATALOG_CACHE_VERSION).list_utility_sources(utility_id)
+
+
+@st.cache_data
+def cached_case_study_wildfires(utility_id: str) -> dict:
+    """Cache the same spatially intersecting wildfires used by Utility View."""
+    catalog = cached_catalog(CATALOG_CACHE_VERSION)
+    bounds = catalog.wildfire_year_bounds()
+    if bounds is None:
+        return {"type": "FeatureCollection", "features": []}
+    start_year = max(bounds[0], bounds[1] - 25)
+    fires = catalog.list_intersecting_wildfires(utility_id, start_year, bounds[1])
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": json.loads(fire.geometry_geojson),
+                "properties": {
+                    "wildfire_id": fire.wildfire_id,
+                    "name": fire.name,
+                    "year": fire.ignition_year,
+                    "acres": fire.acres,
+                },
+            }
+            for fire in fires[:400]
+        ],
+    }
+
+
+@st.cache_data
+def cached_utility_metric(utility_id: str, metric_key: str):
+    """Cache a utility-scoped metric with legacy pair fallback."""
+    return cached_catalog(CATALOG_CACHE_VERSION).get_utility_scalar(
+        utility_id, metric_key
+    )
 
 
 @st.cache_data
 def cached_overview_geojson_v2(table: str) -> dict:
     """Cache all geometries used by the shared map layers."""
-    return cached_catalog().get_overview_geojson(table)
+    return cached_catalog(CATALOG_CACHE_VERSION).get_overview_geojson(table)
 
 
 @st.cache_data(ttl=300)
 def cached_burn_severity_assets() -> dict[int, str]:
     """Load annual burn-severity COGs, refreshing periodically after publication."""
     return load_burn_severity_assets(cached_storage())
-
-
-def _index_by_id(utilities: list[Utility], wildfires: list[Wildfire]) -> tuple[dict[str, Utility], dict[str, Wildfire]]:
-    return ({item.utility_id: item for item in utilities}, {item.wildfire_id: item for item in wildfires})
-
-
-def _first_raster_metric(profile_metrics: list[MetricDefinition]) -> MetricDefinition | None:
-    for metric in profile_metrics:
-        if metric.kind == "raster":
-            return metric
-    return None
-
-
-DEMO_TOTAL_ECON_IMPACT = 22_146_000.0
-DEMO_TOTAL_ECON_IMPACT_HELPER = (
-    "This number was calculated using sources of supply (SoS) costs, which is "
-    "the amount of money a water utility spends on maintaining their water supply. "
-    "To find the economic impact of the Holiday Farm Fire on the Eugene Water & "
-    "Electric Board, we took the difference between the baseline SoS from 2019 and "
-    "the SoS costs for 2020 - 2025, which were the years following the fire."
-)
-BREITENBUSH_TOTAL_ECON_IMPACT_HELPER = (
-    "This number was calculated using sources of supply (SoS) costs, which is "
-    "the amount of money a water utility spends on maintaining their water supply. "
-    "For this Breitenbush case study, we compare the baseline SoS costs before "
-    "the fire with the SoS costs in the years following the fire."
-)
-
-
-def _is_holiday_farm_eweb_case_study(utility: Utility, wildfire: Wildfire) -> bool:
-    """Temporary demo match until the case-study value is published in scalar_metrics."""
-    utility_text = f"{utility.name} {utility.source_area_name}".lower()
-    wildfire_text = wildfire.name.lower()
-    is_eweb = "eweb" in utility_text or ("eugene" in utility_text and "electric" in utility_text)
-    return is_eweb and "holiday farm" in wildfire_text
-
-
-def _is_breitenbush_case_study(utility: Utility, wildfire: Wildfire) -> bool:
-    """Match the Breitenbush demo case by selected utility or wildfire text."""
-    selected_text = f"{utility.name} {utility.source_area_name} {wildfire.name}".lower()
-    return "breitenbush" in selected_text
 
 
 def _clear_admin_login_query_param() -> None:
@@ -237,8 +230,15 @@ def _render_data_sources(*, compact: bool = False) -> None:
 
 def main() -> None:
     """Render the EMBER dashboard."""
-    st.title("EMBER")
-    st.caption("Environmental and economic Measurements of Burn Events on water Resources")
+    with Image.open(_PROJECT_ROOT / "EMBER_logo.png") as logo_source:
+        logo = logo_source.convert("RGBA")
+    visible_pixels = logo.getchannel("A").point(
+        lambda alpha: 255 if alpha >= 8 else 0
+    )
+    visible_bounds = visible_pixels.getbbox()
+    if visible_bounds is not None:
+        logo = logo.crop(visible_bounds)
+    st.image(logo, width=320)
     st.markdown(
         """
         <style>
@@ -249,13 +249,36 @@ def main() -> None:
             outline: none !important;
             box-shadow: none !important;
         }
+        .st-key-view_tabs [role="radiogroup"] {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid #d9d9d9;
+        }
+        .st-key-view_tabs [role="radiogroup"] label {
+            margin: 0;
+            padding: 0.65rem 1.25rem;
+            border-bottom: 3px solid transparent;
+            border-radius: 0;
+            cursor: pointer;
+        }
+        .st-key-view_tabs [role="radiogroup"] label:hover {
+            background: rgba(31, 119, 180, 0.06);
+        }
+        .st-key-view_tabs [role="radiogroup"] label:has(input:checked) {
+            color: #0b4f8a;
+            border-bottom-color: #0b4f8a;
+            font-weight: 600;
+        }
+        .st-key-view_tabs [role="radiogroup"] label > div:first-child {
+            display: none;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    metrics_registry, profiles_registry = cached_registries()
-    catalog = cached_catalog()
+    metrics_registry, _ = cached_registries()
+    catalog = cached_catalog(CATALOG_CACHE_VERSION)
     utilities = catalog.list_utilities()
 
     if st.session_state.get("admin_mode"):
@@ -265,15 +288,18 @@ def main() -> None:
         render_admin_view(catalog, metrics_registry)
         return
 
-    view_mode = st.radio(
-        "View",
-        options=[
-            "Search by Case Study",
-            "Search by utility",
-            "Search by wildfire",
-        ],
-        horizontal=True,
-    )
+    with st.container(key="view_tabs"):
+        view_mode = st.radio(
+            "View",
+            options=[
+                "Search by Case Study",
+                "Search by utility",
+                "Search by wildfire",
+                "General Insights",
+            ],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
     _render_admin_launcher(view_mode)
 
     def render_overview() -> None:
@@ -281,10 +307,16 @@ def main() -> None:
         severity_assets = cached_burn_severity_assets()
         render_overview_map(
             cached_overview_geojson_v2("utilities"),
+            cached_overview_geojson_v2("service_areas"),
             cached_overview_geojson_v2("wildfires"),
             sorted(severity_assets, reverse=True),
             map_key=f"overview_map_{view_mode}",
         )
+
+    if view_mode == "General Insights":
+        render_general_insights(catalog)
+        _render_data_sources()
+        return
 
     if view_mode == "Search by utility":
         # This view queries fires by overlap pair, so it never needs the full
@@ -308,139 +340,71 @@ def main() -> None:
         _render_data_sources()
         return
 
-    wildfires = catalog.list_wildfires()
-    utility_by_id, wildfire_by_id = _index_by_id(utilities, wildfires)
-
     available_case_studies = catalog.list_case_studies()
-    selector_state = render_selectors(
-        profiles_registry,
-        utilities,
-        wildfires,
-        available_case_studies,
-    )
-    if not selector_state.utility_id or not selector_state.wildfire_id:
-        st.info(
-            "Choose an uploaded case study, or select both a water utility and wildfire."
-        )
+    utility_id = render_case_study_selector(available_case_studies)
+    if not utility_id:
+        st.info("Choose an uploaded utility case study.")
         render_overview()
         _render_data_sources(compact=True)
         return
 
-    selected_utility = utility_by_id[selector_state.utility_id]
-    selected_wildfire = wildfire_by_id[selector_state.wildfire_id]
-    selected_fire_year = (
-        selected_wildfire.ignition_date.year
-        if selected_wildfire.ignition_date is not None
-        else None
+    selected_utility = next(
+        utility for utility in utilities if utility.utility_id == utility_id
     )
-    available_severity_years = set(cached_burn_severity_assets())
-    burn_severity_year = (
-        selected_fire_year
-        if selected_fire_year in available_severity_years
-        else None
-    )
-
-    selected_profile = profiles_registry[selector_state.profile_key]
-    profile_metrics = [metrics_registry[metric_key] for metric_key in selected_profile.features]
-
-    feature_rows: list[tuple[MetricDefinition, str, str | None]] = []
-    metric_state_payload: dict[str, tuple[str, MetricValue | None, RasterAsset | None]] = {}
-    metric_helper_text: dict[str, str] = {}
-    for metric in profile_metrics:
-        pair_summary, payload = cached_pair_data(
-            utility_id=selector_state.utility_id,
-            wildfire_id=selector_state.wildfire_id,
-            metric_key=metric.key,
-            kind=metric.kind,
-        )
-        state = resolve_state(pair_summary.has_overlap, payload)
-        scalar_payload = payload if isinstance(payload, MetricValue) else None
-        raster_payload = payload if isinstance(payload, RasterAsset) else None
-        if metric.key == "total_econ_impact" and _is_holiday_farm_eweb_case_study(
-            selected_utility, selected_wildfire
-        ):
-            scalar_payload = MetricValue(
-                utility_id=selector_state.utility_id,
-                wildfire_id=selector_state.wildfire_id,
-                metric_key=metric.key,
-                value=DEMO_TOTAL_ECON_IMPACT,
-                unit=metric.unit or "USD",
-                method="demo override",
-                source_note=None,
-                as_of_date=None,
-            )
-            raster_payload = None
-            state = "available"
-            metric_helper_text[metric.key] = DEMO_TOTAL_ECON_IMPACT_HELPER
-        elif metric.key == "total_econ_impact" and _is_breitenbush_case_study(
-            selected_utility, selected_wildfire
-        ):
-            metric_helper_text[metric.key] = BREITENBUSH_TOTAL_ECON_IMPACT_HELPER
-        metric_state_payload[metric.key] = (state, scalar_payload, raster_payload)
-        rendered_value = (
-            format_scalar_value(metric, scalar_payload.value)
-            if scalar_payload is not None and state == "available"
-            else state_message(state)
-        )
-        feature_rows.append((metric, state, rendered_value))
-
-    raster_metric = _first_raster_metric(profile_metrics)
-    raster_state = "pending"
-    raster_payload: RasterAsset | None = None
-    if raster_metric:
-        raster_state, _, raster_payload = metric_state_payload[raster_metric.key]
-
-    utility_geojson = cached_geojson("utilities", selector_state.utility_id)
-    wildfire_geojson = cached_geojson("wildfires", selector_state.wildfire_id)
-    case_study_costs = cached_case_study_costs(
-        selector_state.utility_id,
-        selector_state.wildfire_id,
-    )
-    map_height = min(500, 240 + 80 * len(profile_metrics))
-
-    map_col, panel_col = st.columns(
-        [3, 2],
-        gap="large",
-        vertical_alignment="top",
-    )
+    st.markdown(f"## {selected_utility.name} ({selected_utility.state})")
+    case_study_costs = cached_case_study_costs(utility_id)
+    map_col, metric_col = st.columns([3, 2], gap="large")
     with map_col:
-        render_map(
-            utility=selected_utility,
-            wildfire=selected_wildfire,
-            utility_geojson=utility_geojson,
-            wildfire_geojson=wildfire_geojson,
-            raster_metric=raster_metric,
-            raster_asset=raster_payload,
-            raster_state=raster_state,  # type: ignore[arg-type]
-            burn_severity_year=burn_severity_year,
-            height=map_height,
+        st.subheader("Utility and wildfire map")
+        render_utility_case_study_map(
+            selected_utility,
+            cached_utility_geojson(utility_id, "source"),
+            cached_utility_geojson(utility_id, "service"),
+            cached_utility_sources(utility_id),
+            cached_case_study_wildfires(utility_id),
+        )
+    with metric_col:
+        first_year = min(row.start_year for row in case_study_costs)
+        last_year = max(row.end_year for row in case_study_costs)
+        total_impact = cached_utility_metric(utility_id, "total_econ_impact")
+        total_impact_value = total_impact.value if total_impact is not None else None
+        utility_text = (
+            f"{selected_utility.name} {selected_utility.source_area_name}".lower()
+        )
+        if total_impact_value is None and (
+            "eweb" in utility_text
+            or ("eugene" in utility_text and "electric" in utility_text)
+        ):
+            total_impact_value = 22_146_000.0
+        st.metric(
+            (
+                "Total economic impact from wildfires "
+                f"(data range {first_year}-{last_year})"
+            ),
+            (
+                f"${total_impact_value:,.0f}"
+                if total_impact_value is not None
+                else "Data not yet available"
+            ),
         )
 
-    with panel_col:
-        st.subheader("Profile Features")
-        for metric in profile_metrics:
-            state, scalar_payload, known_raster_payload = metric_state_payload[metric.key]
-            render_feature_panel(
-                metric,
-                state,
-                scalar_payload,
-                known_raster_payload,
-                helper_text=metric_helper_text.get(metric.key),
-            )  # type: ignore[arg-type]
-
-        export_html = build_export_html(
-            utility_name=selected_utility.name,
-            wildfire_name=selected_wildfire.name,
-            profile_label=selected_profile.label,
-            feature_rows=feature_rows,  # type: ignore[arg-type]
+        pre_fire_revenue = cached_utility_metric(
+            utility_id,
+            "pre_fire_annual_operating_revenue",
         )
-        render_export_button(export_html, selector_state.utility_id, selector_state.wildfire_id)
-
+        st.metric(
+            "Pre-Fire Annual Operating Revenue",
+            (
+                f"${pre_fire_revenue.value:,.0f}"
+                if pre_fire_revenue is not None
+                and pre_fire_revenue.value is not None
+                else "Data not yet available"
+            ),
+        )
     render_economic_impact_data(
         case_study_costs,
         cached_storage(),
-        selector_state.utility_id,
-        selector_state.wildfire_id,
+        utility_id,
     )
     _render_data_sources(compact=True)
 

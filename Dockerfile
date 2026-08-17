@@ -10,10 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # truth), so this layer is cached and only rebuilds when dependencies change.
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
+RUN python -c "import duckdb; connection = duckdb.connect(); connection.execute(\"SET extension_directory='/app/.duckdb/extensions'\"); connection.execute('INSTALL spatial')"
 
 # Then copy the app and install it as a package WITHOUT re-resolving dependencies
 # (they are already installed above). Editing app code only re-runs this fast step.
 COPY pyproject.toml README.md ./
+COPY EMBER_logo.png ./
 COPY core ./core
 COPY config ./config
 COPY scripts ./scripts

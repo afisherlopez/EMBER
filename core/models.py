@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+UTILITY_METRIC_SCOPE_ID = "__utility__"
+
 
 @dataclass(frozen=True)
 class Utility:
@@ -17,6 +19,24 @@ class Utility:
     source_area_name: str
     centroid_lon: float
     centroid_lat: float
+    has_source_area: bool = True
+    has_service_area: bool = False
+
+
+@dataclass(frozen=True)
+class UtilitySource:
+    """One direct or upstream surface-water source connected to a utility."""
+
+    utility_id: str
+    source_id: str
+    source_name: str
+    source_type: str
+    depth: int
+    purchased: bool
+    average_source_usage: float | None
+    average_source_method: str | None
+    longitude: float | None = None
+    latitude: float | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +63,7 @@ class PairSummary:
     has_overlap: bool
     overlap_area_km2: float | None
     overlap_pct_of_source: float | None
+    impact_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,10 +82,9 @@ class MetricValue:
 
 @dataclass(frozen=True)
 class CaseStudyCost:
-    """One raw economic-impact input row for a utility-wildfire case study."""
+    """One raw economic-impact input row for a utility-wide case study."""
 
     utility_id: str
-    wildfire_id: str
     item_type: str
     start_year: int
     end_year: int
@@ -74,19 +94,18 @@ class CaseStudyCost:
     contributing_fires: str
     source: str
     method: str
+    degree_of_causation: str
     description_and_notes: str
+    extra_fields_json: str = ""
 
 
 @dataclass(frozen=True)
 class CaseStudy:
-    """A utility-wildfire pair with uploaded economic-impact source data."""
+    """A utility with uploaded economic-impact source data."""
 
     utility_id: str
     utility_name: str
     utility_state: str
-    wildfire_id: str
-    wildfire_name: str
-    ignition_year: int | None
 
 
 @dataclass(frozen=True)
@@ -120,6 +139,7 @@ class IntersectingWildfire:
     overlap_area_km2: float | None
     overlap_pct_of_source: float | None
     geometry_geojson: str
+    impact_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +170,30 @@ class IntersectingUtility:
     overlap_area_km2: float | None
     overlap_pct_of_source: float | None
     geometry_geojson: str
+
+
+@dataclass(frozen=True)
+class IntersectingServiceArea:
+    """A utility service area overlapped by a selected wildfire."""
+
+    utility_id: str
+    name: str
+    state: str
+    geometry_geojson: str
+
+
+@dataclass(frozen=True)
+class IntersectingSourceLocation:
+    """A connected surface-water point contained by a selected wildfire."""
+
+    utility_id: str
+    utility_name: str
+    source_id: str
+    source_name: str
+    source_type: str
+    depth: int
+    longitude: float
+    latitude: float
 
 
 @dataclass(frozen=True)

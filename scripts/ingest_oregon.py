@@ -64,7 +64,8 @@ def build_utilities(conn: duckdb.DuckDBPyConnection, source_areas_geojson: str) 
             any_value(PWS_label)                       AS name,
             'OR'                                       AS state,
             string_agg(DISTINCT Src_label, '; ')       AS source_area_name,
-            ST_MakeValid(ST_Union_Agg(geom))           AS geom
+            ST_MakeValid(ST_Union_Agg(geom))           AS geom,
+            CAST(NULL AS GEOMETRY)                     AS service_geom
         FROM ST_Read('{source_areas_geojson}')
         WHERE PWS_ID IS NOT NULL AND trim(PWS_ID) <> ''
         GROUP BY lower(PWS_ID)
@@ -79,14 +80,36 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
     wildfires_path = (tables_dir / "wildfires.parquet").as_posix()
     pair_path = (tables_dir / "pair_summary.parquet").as_posix()
 
+    has_ca_fire_pairs = conn.execute(
+        """
+        SELECT count(*)
+        FROM information_schema.tables
+        WHERE table_name = 'ca_fire_pairs'
+        """
+    ).fetchone()[0]
+    california_pairs_union = (
+        """
+        UNION ALL
+        SELECT
+            utility_id, wildfire_id, has_overlap, overlap_area_km2,
+            overlap_pct_of_source, impact_basis, updated_at
+        FROM ca_fire_pairs
+        """
+        if has_ca_fire_pairs
+        else ""
+    )
     conn.execute(
         f"""
         COPY (
             SELECT
                 utility_id, name, state, source_area_name,
                 CAST(ST_AsGeoJSON(ST_Simplify(geom, {DISPLAY_SIMPLIFY_DEG})) AS JSON) AS geometry_geojson,
-                ST_X(ST_Centroid(geom)) AS centroid_lon,
-                ST_Y(ST_Centroid(geom)) AS centroid_lat,
+                CAST(
+                    ST_AsGeoJSON(ST_Simplify(service_geom, {DISPLAY_SIMPLIFY_DEG}))
+                    AS JSON
+                ) AS service_area_geojson,
+                ST_X(ST_Centroid(coalesce(service_geom, geom))) AS centroid_lon,
+                ST_Y(ST_Centroid(coalesce(service_geom, geom))) AS centroid_lat,
                 now() AS updated_at
             FROM util_diss
         ) TO '{utilities_path}' (FORMAT PARQUET)
@@ -120,7 +143,8 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
         CREATE OR REPLACE TEMP TABLE util_proj AS
         SELECT utility_id,
                ST_Transform(geom, 'EPSG:4326', '{AREA_CRS}', always_xy := true) AS g
-        FROM util_diss;
+        FROM util_diss
+        WHERE geom IS NOT NULL;
         CREATE OR REPLACE TEMP TABLE fire_proj AS
         SELECT wildfire_id,
                ST_Transform(geom, 'EPSG:4326', '{AREA_CRS}', always_xy := true) AS g
@@ -142,9 +166,26 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
                 TRUE                              AS has_overlap,
                 inter_m2 / 1.0e6                  AS overlap_area_km2,
                 CASE WHEN util_m2 > 0 THEN inter_m2 / util_m2 * 100.0 END AS overlap_pct_of_source,
+                'source_area'                    AS impact_basis,
                 now()                            AS updated_at
             FROM pairs
             WHERE inter_m2 > 0
+            UNION ALL
+            SELECT
+                utility.utility_id,
+                fire.wildfire_id,
+                TRUE AS has_overlap,
+                CAST(NULL AS DOUBLE) AS overlap_area_km2,
+                CAST(NULL AS DOUBLE) AS overlap_pct_of_source,
+                'service_area' AS impact_basis,
+                now() AS updated_at
+            FROM util_diss utility
+            JOIN fires_raw fire
+              ON ST_Intersects(utility.service_geom, fire.geom)
+            WHERE utility.geom IS NULL
+              AND utility.service_geom IS NOT NULL
+              AND utility.state <> 'CA'
+            {california_pairs_union}
         ) TO '{pair_path}' (FORMAT PARQUET)
         """
     )
@@ -173,6 +214,80 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
                 CAST(NULL AS DOUBLE) AS nodata, CAST(NULL AS DATE) AS as_of_date
             WHERE FALSE
         ) TO '{(tables_dir / "raster_assets.parquet").as_posix()}' (FORMAT PARQUET)
+        """
+    )
+    has_utility_sources = conn.execute(
+        """
+        SELECT count(*)
+        FROM information_schema.tables
+        WHERE table_name = 'utility_sources'
+        """
+    ).fetchone()[0]
+    utility_sources_select = (
+        """
+        SELECT
+            utility_id, source_id, source_name, source_type, source_utility_id,
+            purchased, average_source_usage, average_source_method,
+            source_lon, source_lat
+        FROM utility_sources
+        """
+        if has_utility_sources
+        else """
+        SELECT
+            CAST(NULL AS VARCHAR) AS utility_id,
+            CAST(NULL AS VARCHAR) AS source_id,
+            CAST(NULL AS VARCHAR) AS source_name,
+            CAST(NULL AS VARCHAR) AS source_type,
+            CAST(NULL AS VARCHAR) AS source_utility_id,
+            CAST(NULL AS BOOLEAN) AS purchased,
+            CAST(NULL AS DOUBLE) AS average_source_usage,
+            CAST(NULL AS VARCHAR) AS average_source_method,
+            CAST(NULL AS DOUBLE) AS source_lon,
+            CAST(NULL AS DOUBLE) AS source_lat
+        WHERE FALSE
+        """
+    )
+    conn.execute(
+        f"""
+        COPY ({utility_sources_select})
+        TO '{(tables_dir / "utility_sources.parquet").as_posix()}'
+        (FORMAT PARQUET)
+        """
+    )
+    has_source_fire_matches = conn.execute(
+        """
+        SELECT count(*)
+        FROM information_schema.tables
+        WHERE table_name = 'ca_source_fire_matches'
+        """
+    ).fetchone()[0]
+    source_fire_locations_select = (
+        """
+        SELECT
+            wildfire_id, utility_id, source_id, source_name, source_type,
+            depth, source_lon, source_lat, now() AS updated_at
+        FROM ca_source_fire_matches
+        """
+        if has_source_fire_matches
+        else """
+        SELECT
+            CAST(NULL AS VARCHAR) AS wildfire_id,
+            CAST(NULL AS VARCHAR) AS utility_id,
+            CAST(NULL AS VARCHAR) AS source_id,
+            CAST(NULL AS VARCHAR) AS source_name,
+            CAST(NULL AS VARCHAR) AS source_type,
+            CAST(NULL AS INTEGER) AS depth,
+            CAST(NULL AS DOUBLE) AS source_lon,
+            CAST(NULL AS DOUBLE) AS source_lat,
+            CAST(NULL AS TIMESTAMP WITH TIME ZONE) AS updated_at
+        WHERE FALSE
+        """
+    )
+    conn.execute(
+        f"""
+        COPY ({source_fire_locations_select})
+        TO '{(tables_dir / "source_fire_locations.parquet").as_posix()}'
+        (FORMAT PARQUET)
         """
     )
 

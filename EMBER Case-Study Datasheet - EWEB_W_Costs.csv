@@ -1,8 +1,8 @@
-Item Type,Start Year,End Year,Description,Raw Cost,Inflation-Adjusted Cost,Contributing Fire(s),Source,Method,Description and Notes
-Cost,2020,2020,"""McKenzie River Watershed Recovery""","783,000",977000,"""Holiday Farm Fire""",EWEB_Report 2020,SoS Baseline,
-Cost,2021,2021,"""McKenzie River Watershed Recovery""",2363000,2756000,"""Holiday Farm Fire""",EWEB_Report 2021,SoS Baseline,
-Cost,2022,2022,"""McKenzie River Watershed Recovery""",5060000,5545000,"""Holiday Farm Fire""",EWEB_Report 2022,SoS Baseline,
-Cost,2023,2023,"""McKenzie River Watershed Recovery""",4947000,5245000,"""Holiday Farm Fire""",EWEB_Report 2023,SoS Baseline,
-Cost,2024,2024,"""McKenzie River Watershed Recovery""",4258000,4388000,"""Holiday Farm Fire""",EWEB_Report 2024,SoS Baseline,
-Cost,2025,2025,"""McKenzie River Watershed Recovery""",3222000,3233000,"""Holiday Farm Fire""",EWEB_Report 2025,SoS Baseline,
-Aid,2022,2022,"""Miscellaneous Grants and Partnerships""",1200000,1315000,"""Holiday Farm Fire""",EWEB_Report 2022,Direct Quantification,
+Item Type,Years Incurred,Item Summary,Raw Value,Inflation-Adjusted Value,Contributing Fire(s),Source,Method,Degree of Causation,Description and Notes
+Cost,2020,"""McKenzie River Watershed Recovery""","783,000",977000,"""Holiday Farm Fire""",EWEB_Report 2020,SoS Baseline,1,
+Cost,2021,"""McKenzie River Watershed Recovery""",2363000,2756000,"""Holiday Farm Fire""",EWEB_Report 2021,SoS Baseline,1,
+Cost,2022,"""McKenzie River Watershed Recovery""",5060000,5545000,"""Holiday Farm Fire""",EWEB_Report 2022,SoS Baseline,1,
+Cost,2023,"""McKenzie River Watershed Recovery""",4947000,5245000,"""Holiday Farm Fire""",EWEB_Report 2023,SoS Baseline,1,
+Cost,2024,"""McKenzie River Watershed Recovery""",4258000,4388000,"""Holiday Farm Fire""",EWEB_Report 2024,SoS Baseline,1,
+Cost,2025,"""McKenzie River Watershed Recovery""",3222000,3233000,"""Holiday Farm Fire""",EWEB_Report 2025,SoS Baseline,1,
+Aid,2022,"""Miscellaneous Grants and Partnerships""",1200000,1315000,"""Holiday Farm Fire""",EWEB_Report 2022,Direct Quantification,1,

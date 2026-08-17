@@ -4,6 +4,11 @@ metrics:
     kind: scalar
     unit: USD
     value_format: "${:,.0f}"
+  pre_fire_annual_operating_revenue:
+    display_name: "Pre-Fire Annual Operating Revenue"
+    kind: scalar
+    unit: USD
+    value_format: "${:,.0f}"
   sediment_yield_increase:
     display_name: "Increase in sediment yield"
     kind: raster

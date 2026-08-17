@@ -13,6 +13,7 @@ from core.admin_data import (
     upsert_pair_summary,
     upsert_raster_asset,
     upsert_scalar_metric,
+    upsert_utility_scalar_metric,
 )
 from core.case_study_costs import CaseStudyCSVError, parse_case_study_csv
 from core.catalog import Catalog
@@ -95,11 +96,23 @@ def _render_scalar_metric_form(
     utility_labels = _utility_options(utilities)
     wildfire_labels = _wildfire_options(wildfires)
     metric_labels = _metric_options(metrics, "scalar")
+    metric_label = st.selectbox(
+        "Metric",
+        list(metric_labels.keys()),
+        key="admin_scalar_metric_selection",
+    )
+    metric = metric_labels[metric_label]
+    is_utility_metric = metric.key == "pre_fire_annual_operating_revenue"
 
     with st.form("admin_scalar_metric"):
-        utility, wildfire = _selected_pair(utility_labels, wildfire_labels)
-        metric_label = st.selectbox("Metric", list(metric_labels.keys()))
-        metric = metric_labels[metric_label]
+        utility_label = st.selectbox("Water utility", list(utility_labels.keys()))
+        utility = utility_labels[utility_label]
+        wildfire = None
+        if is_utility_metric:
+            st.caption("This metric applies to the selected utility as a whole.")
+        else:
+            wildfire_label = st.selectbox("Wildfire", list(wildfire_labels.keys()))
+            wildfire = wildfire_labels[wildfire_label]
         value = st.number_input("Value", value=0.0, format="%.6f")
         unit = st.text_input("Unit", value=metric.unit or "")
         method = st.text_input("Method", value="manual admin update")
@@ -108,16 +121,28 @@ def _render_scalar_metric_form(
         submitted = st.form_submit_button("Save scalar metric")
 
     if submitted:
-        result = upsert_scalar_metric(
-            utility_id=utility.utility_id,
-            wildfire_id=wildfire.wildfire_id,
-            metric_key=metric.key,
-            value=float(value),
-            unit=unit or None,
-            method=method or None,
-            source_note=source_note or None,
-            as_of_date=as_of_date,
-        )
+        if is_utility_metric:
+            result = upsert_utility_scalar_metric(
+                utility_id=utility.utility_id,
+                metric_key=metric.key,
+                value=float(value),
+                unit=unit or None,
+                method=method or None,
+                source_note=source_note or None,
+                as_of_date=as_of_date,
+            )
+        else:
+            assert wildfire is not None
+            result = upsert_scalar_metric(
+                utility_id=utility.utility_id,
+                wildfire_id=wildfire.wildfire_id,
+                metric_key=metric.key,
+                value=float(value),
+                unit=unit or None,
+                method=method or None,
+                source_note=source_note or None,
+                as_of_date=as_of_date,
+            )
         _show_write_result(result)
 
 
@@ -197,46 +222,32 @@ def _render_raster_asset_form(
 
 def _render_case_study_cost_form(
     utilities: list[Utility],
-    wildfires: list[Wildfire],
     case_studies: list[CaseStudy],
 ) -> None:
     st.subheader("Case Study Cost Data")
     st.caption(
-        "Upload a CSV to replace the raw economic-impact rows for one utility and wildfire. "
+        "Upload a CSV to replace the raw economic-impact rows for one utility. "
         "Source PDFs must be stored in `case_studies/` with names matching the Source column."
     )
-    utility_labels = _utility_options(utilities)
-    wildfire_labels = _wildfire_options(wildfires)
-    destination_options: dict[str, CaseStudy | None] = {
-        (
-            f"Replace: {case_study.utility_name} × {case_study.wildfire_name} "
-            f"({case_study.ignition_year or 'year unknown'})"
-        ): case_study
-        for case_study in case_studies
-    }
-    destination_options["Create a new utility × wildfire pairing"] = None
-    destination_label = st.selectbox(
-        "Upload destination",
-        list(destination_options),
-        help=(
-            "Choosing an existing case study replaces every previously uploaded row "
-            "for that pair."
-        ),
+    st.caption(
+        "All uploaded columns are preserved. EMBER only needs a recognizable year "
+        "column and cost/value column for the economic-impact chart. In `Years "
+        "Incurred`, enter multiple years as a quoted, comma-separated list such as "
+        "`\"2021, 2022, 2023\"`."
     )
-    selected_case_study = destination_options[destination_label]
+    utility_labels = _utility_options(utilities)
+    existing_utility_ids = {case_study.utility_id for case_study in case_studies}
 
     with st.form("admin_case_study_costs"):
-        if selected_case_study is None:
-            utility, wildfire = _selected_pair(utility_labels, wildfire_labels)
-            utility_id = utility.utility_id
-            wildfire_id = wildfire.wildfire_id
-        else:
-            utility_id = selected_case_study.utility_id
-            wildfire_id = selected_case_study.wildfire_id
+        utility_label = st.selectbox("Water utility", list(utility_labels))
+        utility = utility_labels[utility_label]
+        utility_id = utility.utility_id
+        if utility_id in existing_utility_ids:
             st.write(
-                f"Replacing **{selected_case_study.utility_name} × "
-                f"{selected_case_study.wildfire_name}**"
+                f"Replacing all existing case-study rows for **{utility.name}**."
             )
+        else:
+            st.write(f"Creating a case study for **{utility.name}**.")
         uploaded_file = st.file_uploader("Case-study CSV", type=["csv"])
         submitted = st.form_submit_button("Replace case-study cost data")
 
@@ -252,12 +263,11 @@ def _render_case_study_cost_form(
         return
     result = replace_case_study_costs(
         utility_id=utility_id,
-        wildfire_id=wildfire_id,
         rows=rows,
     )
     st.success(
         f"Replaced the existing data with {len(rows)} uploaded row(s) for "
-        f"`{utility_id}` × `{wildfire_id}`."
+        f"`{utility_id}`."
     )
     _show_write_result(result)
 
@@ -280,7 +290,7 @@ def render_admin_view(catalog: Catalog, metrics: dict[str, MetricDefinition]) ->
     with scalar_tab:
         _render_scalar_metric_form(utilities, wildfires, metrics)
     with costs_tab:
-        _render_case_study_cost_form(utilities, wildfires, case_studies)
+        _render_case_study_cost_form(utilities, case_studies)
     with pair_tab:
         _render_pair_summary_form(utilities, wildfires)
     with raster_tab:

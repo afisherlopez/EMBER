@@ -19,7 +19,13 @@ from streamlit_folium import st_folium
 
 from core.app.map_view import add_burn_severity_layer
 from core.catalog import Catalog
-from core.models import IntersectingUtility, Wildfire, WildfireSummary
+from core.models import (
+    IntersectingServiceArea,
+    IntersectingSourceLocation,
+    IntersectingUtility,
+    Wildfire,
+    WildfireSummary,
+)
 
 # 1 km² = 247.105381 acres; used to report overlap in acres alongside km².
 KM2_TO_ACRES = 247.105381
@@ -33,6 +39,10 @@ def _utility_style(_: dict) -> dict:
 
 def _selected_utility_style(_: dict) -> dict:
     return {"color": "#f2c94c", "weight": 3, "fillColor": "#f2c94c", "fillOpacity": 0.20}
+
+
+def _service_area_style(_: dict) -> dict:
+    return {"color": "#2ca02c", "weight": 2, "fillColor": "#2ca02c", "fillOpacity": 0.12}
 
 
 def _fire_style(_: dict) -> dict:
@@ -79,6 +89,8 @@ def _estimated_source_area_km2(utility: IntersectingUtility) -> float:
 def _render_map(
     fire_geojson: dict,
     utilities: list[IntersectingUtility],
+    service_areas: list[IntersectingServiceArea],
+    source_locations: list[IntersectingSourceLocation],
     selected_utility_id: str | None,
     map_key: str,
     burn_severity_year: int | None,
@@ -129,32 +141,78 @@ def _render_map(
     if selected_utility is not None:
         shown.append(selected_utility)
 
-    util_group = folium.FeatureGroup(name=f"Overlapping source areas ({len(shown)})")
     tooltip_to_utility_id: dict[str, str] = {}
-    for utility in shown:
-        geometry = json.loads(utility.geometry_geojson)
-        pct = _format_overlap_pct(utility.overlap_pct_of_source)
-        pct_text = f"{pct}%" if pct is not None else "n/a"
-        tooltip = (
-            f"{utility.name} ({utility.state}) — {utility.source_area_name} — "
-            f"{pct_text} of source area"
+    if shown:
+        util_group = folium.FeatureGroup(name=f"Overlapping source areas ({len(shown)})")
+        for utility in shown:
+            geometry = json.loads(utility.geometry_geojson)
+            pct = _format_overlap_pct(utility.overlap_pct_of_source)
+            pct_text = f"{pct}%" if pct is not None else "n/a"
+            tooltip = (
+                f"{utility.name} ({utility.state}) — {utility.source_area_name} — "
+                f"{pct_text} of source area"
+            )
+            tooltip_to_utility_id[tooltip] = utility.utility_id
+            folium.GeoJson(
+                {
+                    "type": "Feature",
+                    "geometry": geometry,
+                    "properties": {"utility_id": utility.utility_id},
+                },
+                style_function=(
+                    _selected_utility_style
+                    if utility.utility_id == selected_utility_id
+                    else _utility_style
+                ),
+                tooltip=tooltip,
+            ).add_to(util_group)
+            _collect_points(geometry, bounds_points)
+        util_group.add_to(fmap)
+
+    if service_areas:
+        service_group = folium.FeatureGroup(
+            name=f"Overlapping service areas ({len(service_areas)})"
         )
-        tooltip_to_utility_id[tooltip] = utility.utility_id
-        folium.GeoJson(
-            {
-                "type": "Feature",
-                "geometry": geometry,
-                "properties": {"utility_id": utility.utility_id},
-            },
-            style_function=(
-                _selected_utility_style
-                if utility.utility_id == selected_utility_id
-                else _utility_style
-            ),
-            tooltip=tooltip,
-        ).add_to(util_group)
-        _collect_points(geometry, bounds_points)
-    util_group.add_to(fmap)
+        for service_area in service_areas[:MAX_UTILITIES_ON_MAP]:
+            geometry = json.loads(service_area.geometry_geojson)
+            folium.GeoJson(
+                {
+                    "type": "Feature",
+                    "geometry": geometry,
+                    "properties": {"utility_id": service_area.utility_id},
+                },
+                marker=folium.CircleMarker(
+                    radius=7,
+                    color="#2ca02c",
+                    weight=2,
+                    fill=True,
+                    fill_color="#2ca02c",
+                    fill_opacity=0.9,
+                ),
+                style_function=_service_area_style,
+                tooltip=f"{service_area.name} ({service_area.state}) — service area",
+            ).add_to(service_group)
+            _collect_points(geometry, bounds_points)
+        service_group.add_to(fmap)
+
+    if source_locations:
+        source_group = folium.FeatureGroup(
+            name=f"Surface water points ({len(source_locations)})"
+        )
+        for source in source_locations:
+            folium.CircleMarker(
+                location=[source.latitude, source.longitude],
+                radius=6,
+                color="#1f77b4",
+                weight=2,
+                fill=True,
+                fill_color="#1f77b4",
+                fill_opacity=0.8,
+                tooltip=f"{source.source_name} — {source.utility_name}",
+            ).add_to(source_group)
+            bounds_points.append((source.latitude, source.longitude))
+        source_group.add_to(fmap)
+
     folium.LayerControl(collapsed=True).add_to(fmap)
 
     if bounds_points:
@@ -177,6 +235,9 @@ def _render_map(
 def _render_linked_utility_map_table(
     fire_geojson: dict,
     utilities: list[IntersectingUtility],
+    service_areas: list[IntersectingServiceArea],
+    source_locations: list[IntersectingSourceLocation],
+    show_california_categories: bool,
     wildfire_id: str,
     utility_state_filter: str,
     burn_severity_year: int | None,
@@ -198,6 +259,8 @@ def _render_linked_utility_map_table(
         clicked_utility_id = _render_map(
             fire_geojson,
             utilities,
+            service_areas,
+            source_locations,
             selected_utility_id,
             map_key=(
                 f"fire_utilities_map_{wildfire_id}_{utility_state_filter}_"
@@ -210,80 +273,125 @@ def _render_linked_utility_map_table(
             st.rerun(scope="fragment")
 
     with table_col:
-        table_rows = [
-            {
-                "_utility_id": utility.utility_id,
-                "Water utility": utility.name,
-                "State": utility.state,
-                "Source area": utility.source_area_name,
-                "Year": (
-                    str(utility.ignition_year) if utility.ignition_year is not None else None
-                ),
-                "Overlap % of source": _format_overlap_pct(utility.overlap_pct_of_source),
-                "Overlap acres": (
-                    round(utility.overlap_area_km2 * KM2_TO_ACRES)
-                    if utility.overlap_area_km2 is not None
-                    else None
-                ),
-                "Overlap km²": (
-                    round(utility.overlap_area_km2, 2)
-                    if utility.overlap_area_km2 is not None
-                    else None
-                ),
-            }
-            for utility in utilities
-        ]
-        table_data = pd.DataFrame(table_rows)
-        visible_columns = [column for column in table_data.columns if column != "_utility_id"]
-
-        def highlight_selected_row(row: pd.Series) -> list[str]:
-            style = (
-                "background-color: #fff8cc;"
-                if row["_utility_id"] == selected_utility_id
-                else ""
-            )
-            return [style] * len(row)
-
-        styled_table = table_data.style.apply(highlight_selected_row, axis=1)
-        selected_row_index = next(
-            (
-                index
-                for index, row in enumerate(table_rows)
-                if row["_utility_id"] == selected_utility_id
-            ),
-            None,
-        )
-        selection_default = (
-            {
-                "selection": {
-                    "rows": [],
-                    "columns": [],
-                    "cells": [(selected_row_index, visible_columns[0])],
+        if utilities:
+            st.subheader("Source-water areas")
+            table_rows = [
+                {
+                    "_utility_id": utility.utility_id,
+                    "Water utility": utility.name,
+                    "State": utility.state,
+                    "Source area": utility.source_area_name,
+                    "Year": (
+                        str(utility.ignition_year)
+                        if utility.ignition_year is not None
+                        else None
+                    ),
+                    "Overlap % of source": _format_overlap_pct(
+                        utility.overlap_pct_of_source
+                    ),
+                    "Overlap acres": (
+                        round(utility.overlap_area_km2 * KM2_TO_ACRES)
+                        if utility.overlap_area_km2 is not None
+                        else None
+                    ),
+                    "Overlap km²": (
+                        round(utility.overlap_area_km2, 2)
+                        if utility.overlap_area_km2 is not None
+                        else None
+                    ),
                 }
-            }
-            if selected_row_index is not None
-            else None
-        )
-        table_event = st.dataframe(
-            styled_table,
-            key=(
-                f"fire_utilities_table_{wildfire_id}_{utility_state_filter}_"
-                f"{selected_utility_id or 'none'}"
-            ),
-            width="stretch",
-            hide_index=True,
-            column_order=visible_columns,
-            on_select="rerun",
-            selection_mode="single-cell",
-            selection_default=selection_default,
-        )
-        if table_event.selection.cells:
-            selected_cell = table_event.selection.cells[0]
-            selected_row = selected_cell[0]
-            clicked_table_utility_id = table_rows[selected_row]["_utility_id"]
-            if clicked_table_utility_id != selected_utility_id:
-                st.session_state["fire_view_selected_utility_id"] = clicked_table_utility_id
-                st.rerun(scope="fragment")
+                for utility in utilities
+            ]
+            table_data = pd.DataFrame(table_rows)
+            visible_columns = [
+                column for column in table_data.columns if column != "_utility_id"
+            ]
+
+            def highlight_selected_row(row: pd.Series) -> list[str]:
+                style = (
+                    "background-color: #fff8cc;"
+                    if row["_utility_id"] == selected_utility_id
+                    else ""
+                )
+                return [style] * len(row)
+
+            styled_table = table_data.style.apply(highlight_selected_row, axis=1)
+            selected_row_index = next(
+                (
+                    index
+                    for index, row in enumerate(table_rows)
+                    if row["_utility_id"] == selected_utility_id
+                ),
+                None,
+            )
+            selection_default = (
+                {
+                    "selection": {
+                        "rows": [],
+                        "columns": [],
+                        "cells": [(selected_row_index, visible_columns[0])],
+                    }
+                }
+                if selected_row_index is not None
+                else None
+            )
+            table_event = st.dataframe(
+                styled_table,
+                key=(
+                    f"fire_utilities_table_{wildfire_id}_{utility_state_filter}_"
+                    f"{selected_utility_id or 'none'}"
+                ),
+                width="stretch",
+                hide_index=True,
+                column_order=visible_columns,
+                on_select="rerun",
+                selection_mode="single-cell",
+                selection_default=selection_default,
+            )
+            if table_event.selection.cells:
+                selected_cell = table_event.selection.cells[0]
+                selected_row = selected_cell[0]
+                clicked_table_utility_id = table_rows[selected_row]["_utility_id"]
+                if clicked_table_utility_id != selected_utility_id:
+                    st.session_state["fire_view_selected_utility_id"] = (
+                        clicked_table_utility_id
+                    )
+                    st.rerun(scope="fragment")
+        if show_california_categories:
+            st.subheader("Utility service areas")
+            if service_areas:
+                st.dataframe(
+                    [
+                        {"Water utility": area.name, "State": area.state}
+                        for area in service_areas
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No utility service areas overlapped this wildfire.")
+
+            st.subheader("Surface water points")
+            if source_locations:
+                st.dataframe(
+                    [
+                        {
+                            "Surface water point": source.source_name,
+                            "Type": source.source_type,
+                            "Water utility": source.utility_name,
+                            "Connection": (
+                                "Direct"
+                                if source.depth == 1
+                                else f"Upstream ({source.depth} links)"
+                            ),
+                        }
+                        for source in source_locations
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No connected surface water points fell within this wildfire.")
 
 
 def render_fire_view(
@@ -293,7 +401,7 @@ def render_fire_view(
     available_burn_severity_years: set[int],
 ) -> None:
     """Render the 'select a wildfire -> overlapping utilities' view."""
-    st.subheader("Water utilities a wildfire's perimeter overlapped")
+    st.subheader("Water utility areas and sources overlapped by a wildfire")
 
     wildfire_states = sorted({wildfire.state for wildfire in wildfires if wildfire.state})
     known_acres = [wildfire.acres for wildfire in wildfires if wildfire.acres is not None]
@@ -355,7 +463,10 @@ def render_fire_view(
 
     if not wildfire_id:
         render_overview()
-        st.info("Select a wildfire to see the water utility source areas it overlapped.")
+        st.info(
+            "Select a wildfire to see the source areas, service areas, and connected "
+            "surface water points it overlapped."
+        )
         return
 
     summary: WildfireSummary | None = catalog.get_wildfire_summary(wildfire_id)
@@ -373,29 +484,55 @@ def render_fire_view(
 
     fire_geojson = catalog.get_geojson("wildfires", wildfire_id, simplify_tolerance=0.0)
     utilities = catalog.list_intersecting_utilities(wildfire_id)
+    if summary.state == "CA":
+        service_areas = catalog.list_intersecting_service_areas(wildfire_id)
+        source_locations = catalog.list_intersecting_source_locations(wildfire_id)
+        utilities = []
+    else:
+        service_areas = []
+        source_locations = []
     burn_severity_year = (
         summary.ignition_year
         if summary.ignition_year in available_burn_severity_years
         else None
     )
-    if not utilities:
+    if not utilities and not service_areas and not source_locations:
         _render_map(
             fire_geojson,
+            [],
+            [],
             [],
             selected_utility_id=None,
             map_key=f"fire_utilities_map_{wildfire_id}_none",
             burn_severity_year=burn_severity_year,
         )
-        st.warning(f"No water utility source areas overlapped {summary.name}.")
+        if summary.state == "CA":
+            st.warning(
+                f"No utility service areas or connected surface water points overlapped "
+                f"{summary.name}."
+            )
+        else:
+            st.warning(f"No water utility source areas overlapped {summary.name}.")
         return
 
-    st.markdown(
-        f"**{len(utilities)}** water utility source area(s) overlapped **{summary.name}**."
-    )
+    if summary.state == "CA":
+        st.markdown(
+            f"**{len(service_areas)}** service area(s) and "
+            f"**{len(source_locations)}** connected surface water point(s) overlapped "
+            f"**{summary.name}**."
+        )
+    else:
+        st.markdown(
+            f"**{len(utilities)}** water utility source area(s) overlapped "
+            f"**{summary.name}**."
+        )
 
     _render_linked_utility_map_table(
         fire_geojson,
         utilities,
+        service_areas,
+        source_locations,
+        summary.state == "CA",
         wildfire_id,
         "All",
         burn_severity_year,

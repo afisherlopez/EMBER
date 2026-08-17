@@ -13,6 +13,7 @@ def test_registry_loads_sample_config() -> None:
     metrics = load_metric_registry(base / "metrics.yaml")
     profiles = load_profile_registry(base / "profiles.yaml", metrics)
     assert "total_econ_impact" in metrics
+    assert "pre_fire_annual_operating_revenue" in metrics
     assert "water_utility" in profiles
 
 

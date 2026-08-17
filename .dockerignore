@@ -1,5 +1,5 @@
 # Keep the build context (and Cloud Build uploads) small and free of secrets.
-# Only pyproject.toml, README.md, core/, config/, scripts/, docs/ are COPYed by the Dockerfile.
+# Only runtime code, config, documentation, and the logo are copied by the Dockerfile.
 
 # Version control
 .git

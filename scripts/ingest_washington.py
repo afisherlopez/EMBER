@@ -86,7 +86,8 @@ def build_utilities(conn: duckdb.DuckDBPyConnection, doh_gdb: str) -> None:
                 ST_Union_Agg(
                     ST_Transform(Shape, '{SOURCE_CRS}', 'EPSG:4326', always_xy := true)
                 )
-            ) AS geom
+            ) AS geom,
+            CAST(NULL AS GEOMETRY) AS service_geom
         FROM ST_Read('{doh_gdb}')
         WHERE PwsId IS NOT NULL
           AND trim(PwsId) <> ''
@@ -107,8 +108,12 @@ def write_utilities(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> Path:
             SELECT
                 utility_id, name, state, source_area_name,
                 CAST(ST_AsGeoJSON(ST_Simplify(geom, {DISPLAY_SIMPLIFY_DEG})) AS JSON) AS geometry_geojson,
-                ST_X(ST_Centroid(geom)) AS centroid_lon,
-                ST_Y(ST_Centroid(geom)) AS centroid_lat,
+                CAST(
+                    ST_AsGeoJSON(ST_Simplify(service_geom, {DISPLAY_SIMPLIFY_DEG}))
+                    AS JSON
+                ) AS service_area_geojson,
+                ST_X(ST_Centroid(coalesce(service_geom, geom))) AS centroid_lon,
+                ST_Y(ST_Centroid(coalesce(service_geom, geom))) AS centroid_lat,
                 now() AS updated_at
             FROM util_diss
         ) TO '{utilities_path}' (FORMAT PARQUET)
@@ -149,7 +154,8 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
         CREATE OR REPLACE TEMP TABLE util_proj AS
         SELECT utility_id,
                ST_Transform(geom, 'EPSG:4326', '{AREA_CRS}', always_xy := true) AS g
-        FROM util_diss;
+        FROM util_diss
+        WHERE geom IS NOT NULL;
         CREATE OR REPLACE TEMP TABLE fire_proj AS
         SELECT wildfire_id,
                ST_Transform(geom, 'EPSG:4326', '{AREA_CRS}', always_xy := true) AS g

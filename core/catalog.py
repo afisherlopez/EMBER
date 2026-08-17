@@ -3,21 +3,35 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
 
 import duckdb
 
+from core.manual_utilities import (
+    DENVER_WATER_ID,
+    DENVER_WATER_LATITUDE,
+    DENVER_WATER_LONGITUDE,
+    DENVER_WATER_NAME,
+    DENVER_WATER_SERVICE_POINT,
+    DENVER_WATER_STATE,
+)
 from core.models import (
     CaseStudy,
     CaseStudyCost,
+    IntersectingServiceArea,
+    IntersectingSourceLocation,
     IntersectingUtility,
     IntersectingWildfire,
     MetricValue,
     PairSummary,
     RasterAsset,
     Utility,
+    UtilitySource,
+    UTILITY_METRIC_SCOPE_ID,
     Wildfire,
     WildfireSummary,
 )
@@ -35,6 +49,7 @@ class Catalog:
         self._dataset_cache: TemporaryDirectory[str] | None = None
         self._dataset_download_lock = Lock()
         self._materialization_lock = Lock()
+        self._spatial_loaded = False
         self._conn = duckdb.connect(database=":memory:")
         duckdb_home = Path(".duckdb").resolve()
         duckdb_home.mkdir(parents=True, exist_ok=True)
@@ -91,16 +106,65 @@ class Catalog:
                 self._materialized.add(name)
         return f'"{name}"'
 
+    def _column_exists(self, table_name: str, column_name: str) -> bool:
+        """Return whether a materialized dataset contains a named column."""
+        self._table(table_name)
+        row = self._conn.execute(
+            """
+            SELECT count(*)
+            FROM information_schema.columns
+            WHERE table_name = ? AND column_name = ?
+            """,
+            [table_name, column_name],
+        ).fetchone()
+        return bool(row and row[0])
+
     def list_utilities(self) -> list[Utility]:
         """List utility selector metadata without geometry payload."""
+        utilities = self._table("utilities")
+        has_service_area = (
+            "service_area_geojson IS NOT NULL"
+            if self._column_exists("utilities", "service_area_geojson")
+            else "FALSE"
+        )
         rows = self._conn.execute(
             f"""
-            SELECT utility_id, name, state, source_area_name, centroid_lon, centroid_lat
-            FROM {self._table("utilities")}
+            SELECT
+                utility_id, name, state, source_area_name, centroid_lon, centroid_lat,
+                geometry_geojson IS NOT NULL AS has_source_area,
+                {has_service_area} AS has_service_area
+            FROM {utilities}
             ORDER BY name
             """
         ).fetchall()
-        return [Utility(*row) for row in rows]
+        utilities = [Utility(*row) for row in rows]
+        existing_index = next(
+            (
+                index
+                for index, utility in enumerate(utilities)
+                if utility.utility_id == DENVER_WATER_ID
+            ),
+            None,
+        )
+        if existing_index is None:
+            utilities.append(
+                Utility(
+                    utility_id=DENVER_WATER_ID,
+                    name=DENVER_WATER_NAME,
+                    state=DENVER_WATER_STATE,
+                    source_area_name="Service location only",
+                    centroid_lon=DENVER_WATER_LONGITUDE,
+                    centroid_lat=DENVER_WATER_LATITUDE,
+                    has_source_area=False,
+                    has_service_area=True,
+                )
+            )
+        elif not utilities[existing_index].has_service_area:
+            utilities[existing_index] = replace(
+                utilities[existing_index],
+                has_service_area=True,
+            )
+        return sorted(utilities, key=lambda utility: utility.name)
 
     def list_wildfires(self, state: str | None = None, year: int | None = None) -> list[Wildfire]:
         """List wildfire selector rows with optional location/year filtering."""
@@ -129,17 +193,28 @@ class Catalog:
     def get_overview_geojson(self, table: str) -> dict:
         """Return all source areas or wildfire perimeters as one GeoJSON layer."""
         if table == "utilities":
+            source_table = "utilities"
             id_column = "utility_id"
             property_columns = ["name", "state", "source_area_name"]
+            geometry_column = "geometry_geojson"
+        elif table == "service_areas":
+            source_table = "utilities"
+            id_column = "utility_id"
+            property_columns = ["name", "state"]
+            geometry_column = "service_area_geojson"
+            if not self._column_exists(source_table, geometry_column):
+                return {"type": "FeatureCollection", "features": []}
         elif table == "wildfires":
+            source_table = "wildfires"
             id_column = "wildfire_id"
             property_columns = ["name", "state", "acres"]
+            geometry_column = "geometry_geojson"
         else:
             raise ValueError(f"Unsupported overview geometry table: {table}")
 
-        selected_columns = ", ".join([id_column, *property_columns, "geometry_geojson"])
+        selected_columns = ", ".join([id_column, *property_columns, geometry_column])
         rows = self._conn.execute(
-            f"SELECT {selected_columns} FROM {self._table(table)}"
+            f"SELECT {selected_columns} FROM {self._table(source_table)}"
         ).fetchall()
         features = []
         for row in rows:
@@ -177,6 +252,11 @@ class Catalog:
                     "properties": properties,
                 }
             )
+        if table == "service_areas" and not any(
+            feature["properties"].get("utility_id") == DENVER_WATER_ID
+            for feature in features
+        ):
+            features.append(deepcopy(DENVER_WATER_SERVICE_POINT))
         return {"type": "FeatureCollection", "features": features}
 
     def get_pair_summary(self, utility_id: str, wildfire_id: str) -> PairSummary:
@@ -185,9 +265,16 @@ class Catalog:
         `pair_summary` only stores overlapping pairs, so an absent row means the fire
         perimeter does not intersect the source area (the app's "No direct impact" state).
         """
+        impact_basis = (
+            "impact_basis"
+            if self._column_exists("pair_summary", "impact_basis")
+            else "CAST(NULL AS VARCHAR)"
+        )
         row = self._conn.execute(
             f"""
-            SELECT utility_id, wildfire_id, has_overlap, overlap_area_km2, overlap_pct_of_source
+            SELECT
+                utility_id, wildfire_id, has_overlap, overlap_area_km2,
+                overlap_pct_of_source, {impact_basis}
             FROM {self._table("pair_summary")}
             WHERE utility_id = ? AND wildfire_id = ?
             """,
@@ -211,6 +298,95 @@ class Catalog:
             return None
         return int(row[0]), int(row[1])
 
+    def list_yearly_burned_area(self) -> list[tuple[int, float]]:
+        """Sum recorded wildfire acres by ignition year and convert to square kilometers."""
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                EXTRACT(YEAR FROM ignition_date)::INTEGER AS ignition_year,
+                SUM(acres) * 0.0040468564224 AS burned_area_km2
+            FROM {self._table("wildfires")}
+            WHERE ignition_date IS NOT NULL
+              AND acres IS NOT NULL
+            GROUP BY ignition_year
+            ORDER BY ignition_year
+            """
+        ).fetchall()
+        return [(int(year), float(area)) for year, area in rows]
+
+    def list_yearly_intersected_area(self) -> list[tuple[int, float]]:
+        """Sum utility source/service-area overlap with wildfires by ignition year."""
+        has_service_geometry = self._column_exists(
+            "utilities", "service_area_geojson"
+        )
+        if has_service_geometry and not self._spatial_loaded:
+            self._conn.execute("LOAD spatial")
+            self._spatial_loaded = True
+        impact_filter = (
+            """
+            AND (
+                p.impact_basis LIKE '%source_area%'
+                OR p.impact_basis LIKE '%service_area%'
+                OR p.impact_basis IS NULL
+            )
+            """
+            if self._column_exists("pair_summary", "impact_basis")
+            else ""
+        )
+        service_area_expression = (
+            """
+            WHEN p.overlap_area_km2 IS NULL
+             AND p.impact_basis LIKE '%service_area%'
+             AND u.service_area_geojson IS NOT NULL
+            THEN ST_Area(
+                ST_Intersection(
+                    ST_Transform(
+                        ST_GeomFromGeoJSON(CAST(u.service_area_geojson AS VARCHAR)),
+                        'EPSG:4326',
+                        'EPSG:5070',
+                        always_xy := true
+                    ),
+                    ST_Transform(
+                        ST_GeomFromGeoJSON(CAST(w.geometry_geojson AS VARCHAR)),
+                        'EPSG:4326',
+                        'EPSG:5070',
+                        always_xy := true
+                    )
+                )
+            ) / 1.0e6
+            """
+            if has_service_geometry
+            and self._column_exists("pair_summary", "impact_basis")
+            else ""
+        )
+        rows = self._conn.execute(
+            f"""
+            WITH intersections AS (
+                SELECT
+                    EXTRACT(YEAR FROM w.ignition_date)::INTEGER AS ignition_year,
+                    CASE
+                        WHEN p.overlap_area_km2 IS NOT NULL
+                        THEN p.overlap_area_km2
+                        {service_area_expression}
+                        ELSE 0.0
+                    END AS intersected_area_km2
+                FROM {self._table("pair_summary")} p
+                JOIN {self._table("wildfires")} w USING (wildfire_id)
+                JOIN {self._table("utilities")} u USING (utility_id)
+                WHERE p.has_overlap
+                  AND w.ignition_date IS NOT NULL
+                  {impact_filter}
+            )
+            SELECT
+                ignition_year,
+                SUM(intersected_area_km2)::DOUBLE AS intersected_area_km2
+            FROM intersections
+            GROUP BY ignition_year
+            ORDER BY ignition_year
+            """
+        ).fetchall()
+        return [(int(year), float(area)) for year, area in rows]
+
     def list_intersecting_wildfires(
         self, utility_id: str, year_min: int, year_max: int
     ) -> list[IntersectingWildfire]:
@@ -220,6 +396,11 @@ class Catalog:
         both the fire table and the map perimeters without per-fire follow-up lookups.
         Ordered by overlap share (largest first).
         """
+        impact_basis = (
+            "p.impact_basis"
+            if self._column_exists("pair_summary", "impact_basis")
+            else "CAST(NULL AS VARCHAR)"
+        )
         rows = self._conn.execute(
             f"""
             SELECT
@@ -229,7 +410,8 @@ class Catalog:
                 w.acres,
                 p.overlap_area_km2,
                 p.overlap_pct_of_source,
-                w.geometry_geojson
+                w.geometry_geojson,
+                {impact_basis}
             FROM {self._table("pair_summary")} p
             JOIN {self._table("wildfires")} w USING (wildfire_id)
             WHERE p.utility_id = ?
@@ -269,6 +451,11 @@ class Catalog:
         and the source-area outlines without per-utility follow-up lookups. Ordered by
         overlap share (largest first).
         """
+        source_area_filter = (
+            "AND p.impact_basis LIKE '%source_area%'"
+            if self._column_exists("pair_summary", "impact_basis")
+            else ""
+        )
         rows = self._conn.execute(
             f"""
             SELECT
@@ -285,11 +472,65 @@ class Catalog:
             JOIN {self._table("wildfires")} w USING (wildfire_id)
             WHERE p.wildfire_id = ?
               AND p.has_overlap
+              {source_area_filter}
             ORDER BY p.overlap_pct_of_source DESC NULLS LAST, p.overlap_area_km2 DESC NULLS LAST
             """,
             [wildfire_id],
         ).fetchall()
         return [IntersectingUtility(*row) for row in rows]
+
+    def list_intersecting_service_areas(
+        self, wildfire_id: str
+    ) -> list[IntersectingServiceArea]:
+        """List utility service areas overlapped by a selected wildfire."""
+        if not self._column_exists("pair_summary", "impact_basis"):
+            return []
+        if not self._column_exists("utilities", "service_area_geojson"):
+            return []
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                u.utility_id,
+                u.name,
+                u.state,
+                u.service_area_geojson
+            FROM {self._table("pair_summary")} p
+            JOIN {self._table("utilities")} u USING (utility_id)
+            WHERE p.wildfire_id = ?
+              AND p.has_overlap
+              AND p.impact_basis LIKE '%service_area%'
+              AND u.service_area_geojson IS NOT NULL
+            ORDER BY u.name, u.state
+            """,
+            [wildfire_id],
+        ).fetchall()
+        return [IntersectingServiceArea(*row) for row in rows]
+
+    def list_intersecting_source_locations(
+        self, wildfire_id: str
+    ) -> list[IntersectingSourceLocation]:
+        """List connected surface-water points contained by a selected wildfire."""
+        if not self._storage.exists("tables/source_fire_locations.parquet"):
+            return []
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                location.utility_id,
+                utility.name,
+                location.source_id,
+                location.source_name,
+                location.source_type,
+                location.depth,
+                location.source_lon,
+                location.source_lat
+            FROM {self._table("source_fire_locations")} location
+            JOIN {self._table("utilities")} utility USING (utility_id)
+            WHERE location.wildfire_id = ?
+            ORDER BY location.source_name, utility.name, location.depth
+            """,
+            [wildfire_id],
+        ).fetchall()
+        return [IntersectingSourceLocation(*row) for row in rows]
 
     def get_scalar(self, utility_id: str, wildfire_id: str, metric_key: str) -> MetricValue | None:
         """Return scalar metric payload for a selected pair and metric."""
@@ -306,46 +547,176 @@ class Catalog:
             return None
         return MetricValue(*row)
 
-    def list_case_study_costs(
-        self, utility_id: str, wildfire_id: str
-    ) -> list[CaseStudyCost]:
-        """Return raw economic-impact inputs for one case study."""
+    def get_utility_scalar(
+        self, utility_id: str, metric_key: str
+    ) -> MetricValue | None:
+        """Return a utility-scoped metric, falling back to a legacy pair value."""
+        row = self._conn.execute(
+            f"""
+            SELECT
+                utility_id, wildfire_id, metric_key, value, unit, method,
+                source_note, as_of_date
+            FROM {self._table("scalar_metrics")}
+            WHERE utility_id = ?
+              AND metric_key = ?
+            ORDER BY
+                CASE WHEN wildfire_id = ? THEN 0 ELSE 1 END,
+                as_of_date DESC NULLS LAST
+            LIMIT 1
+            """,
+            [utility_id, metric_key, UTILITY_METRIC_SCOPE_ID],
+        ).fetchone()
+        return MetricValue(*row) if row is not None else None
+
+    def list_case_study_costs(self, utility_id: str) -> list[CaseStudyCost]:
+        """Return all raw economic-impact inputs for one utility case study."""
         if not self._storage.exists("tables/case_study_costs.parquet"):
             return []
+        degree_of_causation = (
+            "coalesce(degree_of_causation, '')"
+            if self._column_exists("case_study_costs", "degree_of_causation")
+            else "''"
+        )
+        extra_fields_json = (
+            "coalesce(CAST(extra_fields_json AS VARCHAR), '')"
+            if self._column_exists("case_study_costs", "extra_fields_json")
+            else "''"
+        )
         rows = self._conn.execute(
             f"""
             SELECT
-                utility_id, wildfire_id, item_type, start_year, end_year,
+                utility_id, item_type, start_year, end_year,
                 description, raw_cost, inflation_adjusted_cost,
-                contributing_fires, source, method, description_and_notes
+                contributing_fires, source, method, {degree_of_causation},
+                description_and_notes, {extra_fields_json}
             FROM {self._table("case_study_costs")}
-            WHERE utility_id = ? AND wildfire_id = ?
+            WHERE utility_id = ?
             ORDER BY start_year, end_year, item_type, description
             """,
-            [utility_id, wildfire_id],
+            [utility_id],
         ).fetchall()
         return [CaseStudyCost(*row) for row in rows]
 
     def list_case_studies(self) -> list[CaseStudy]:
-        """List utility-wildfire pairs that have uploaded case-study CSV rows."""
+        """List utilities that have uploaded case-study CSV rows."""
         if not self._storage.exists("tables/case_study_costs.parquet"):
             return []
+        utility_ids = {
+            row[0]
+            for row in self._conn.execute(
+            f"""
+            SELECT DISTINCT utility_id
+            FROM {self._table("case_study_costs")}
+            """
+            ).fetchall()
+        }
+        case_studies = [
+            CaseStudy(utility.utility_id, utility.name, utility.state)
+            for utility in self.list_utilities()
+            if utility.utility_id in utility_ids
+        ]
+        return sorted(
+            case_studies,
+            key=lambda case_study: (
+                case_study.utility_name,
+                case_study.utility_state,
+            ),
+        )
+
+    def list_utility_sources(self, utility_id: str) -> list[UtilitySource]:
+        """List direct and transitively connected surface-water sources.
+
+        California's source-connection data records a utility as the source of
+        another utility. The recursive query follows those supplier links until
+        it reaches natural sources, while retaining supplier rows and preventing
+        cycles. A source reachable through multiple paths is shown at its shortest
+        connection depth.
+        """
+        if not self._storage.exists("tables/utility_sources.parquet"):
+            return []
+        sources_table = self._table("utility_sources")
+        has_locations = self._column_exists("utility_sources", "source_lon")
+        direct_lon = "us.source_lon" if has_locations else "CAST(NULL AS DOUBLE)"
+        direct_lat = "us.source_lat" if has_locations else "CAST(NULL AS DOUBLE)"
+        upstream_lon = (
+            "upstream.source_lon" if has_locations else "CAST(NULL AS DOUBLE)"
+        )
+        upstream_lat = (
+            "upstream.source_lat" if has_locations else "CAST(NULL AS DOUBLE)"
+        )
         rows = self._conn.execute(
             f"""
-            SELECT DISTINCT
-                u.utility_id,
-                u.name AS utility_name,
-                u.state AS utility_state,
-                w.wildfire_id,
-                w.name AS wildfire_name,
-                EXTRACT(YEAR FROM w.ignition_date)::INTEGER AS ignition_year
-            FROM {self._table("case_study_costs")} c
-            JOIN {self._table("utilities")} u USING (utility_id)
-            JOIN {self._table("wildfires")} w USING (wildfire_id)
-            ORDER BY u.name, w.name, ignition_year
-            """
+            WITH RECURSIVE source_network AS (
+                SELECT
+                    us.utility_id AS root_utility_id,
+                    us.source_id,
+                    us.source_name,
+                    us.source_type,
+                    us.source_utility_id,
+                    1 AS depth,
+                    us.purchased,
+                    us.average_source_usage,
+                    us.average_source_method,
+                    {direct_lon} AS source_lon,
+                    {direct_lat} AS source_lat,
+                    [us.utility_id, coalesce(us.source_utility_id, us.source_id)] AS path
+                FROM {sources_table} us
+                WHERE us.utility_id = ?
+
+                UNION ALL
+
+                SELECT
+                    network.root_utility_id,
+                    upstream.source_id,
+                    upstream.source_name,
+                    upstream.source_type,
+                    upstream.source_utility_id,
+                    network.depth + 1,
+                    upstream.purchased,
+                    upstream.average_source_usage,
+                    upstream.average_source_method,
+                    {upstream_lon},
+                    {upstream_lat},
+                    list_append(
+                        network.path,
+                        coalesce(upstream.source_utility_id, upstream.source_id)
+                    )
+                FROM source_network network
+                JOIN {sources_table} upstream
+                  ON upstream.utility_id = network.source_utility_id
+                WHERE network.source_utility_id IS NOT NULL
+                  AND network.depth < 20
+                  AND NOT list_contains(
+                      network.path,
+                      coalesce(upstream.source_utility_id, upstream.source_id)
+                  )
+            ),
+            ranked AS (
+                SELECT *,
+                       row_number() OVER (
+                           PARTITION BY root_utility_id, source_id
+                           ORDER BY depth, source_name
+                       ) AS source_rank
+                FROM source_network
+            )
+            SELECT
+                root_utility_id,
+                source_id,
+                source_name,
+                source_type,
+                depth,
+                purchased,
+                average_source_usage,
+                average_source_method,
+                source_lon,
+                source_lat
+            FROM ranked
+            WHERE source_rank = 1
+            ORDER BY depth, source_type, source_name
+            """,
+            [utility_id],
         ).fetchall()
-        return [CaseStudy(*row) for row in rows]
+        return [UtilitySource(*row) for row in rows]
 
     def get_raster_asset(self, utility_id: str, wildfire_id: str, metric_key: str) -> RasterAsset | None:
         """Return raster asset payload for a selected pair and metric."""
@@ -361,6 +732,41 @@ class Catalog:
         if row is None:
             return None
         return RasterAsset(*row)
+
+    def get_utility_geojson(self, utility_id: str, area_type: str) -> dict | None:
+        """Return a utility's source or service area, when that geometry exists."""
+        if area_type == "source":
+            geometry_column = "geometry_geojson"
+        elif area_type == "service":
+            geometry_column = "service_area_geojson"
+        else:
+            raise ValueError(f"Unsupported utility area type: {area_type}")
+        manual_service_point = (
+            area_type == "service" and utility_id == DENVER_WATER_ID
+        )
+        if not self._column_exists("utilities", geometry_column):
+            if manual_service_point:
+                return deepcopy(DENVER_WATER_SERVICE_POINT)
+            return None
+        row = self._conn.execute(
+            f"""
+            SELECT {geometry_column}
+            FROM {self._table("utilities")}
+            WHERE utility_id = ?
+            LIMIT 1
+            """,
+            [utility_id],
+        ).fetchone()
+        if row is None or row[0] is None:
+            if manual_service_point:
+                return deepcopy(DENVER_WATER_SERVICE_POINT)
+            return None
+        geometry = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        return {
+            "type": "Feature",
+            "geometry": geometry,
+            "properties": {"id": utility_id, "area_type": area_type},
+        }
 
     def get_geojson(self, table: str, row_id: str, simplify_tolerance: float) -> dict:
         """Return GeoJSON geometry for one utility or wildfire id."""

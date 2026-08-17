@@ -13,6 +13,7 @@ import duckdb
 from google.cloud import storage as gcs_storage
 
 from core.case_study_costs import CaseStudyCostInput
+from core.models import UTILITY_METRIC_SCOPE_ID
 from core.settings import settings
 
 
@@ -143,6 +144,29 @@ def upsert_scalar_metric(
     )
 
 
+def upsert_utility_scalar_metric(
+    *,
+    utility_id: str,
+    metric_key: str,
+    value: float | None,
+    unit: str | None,
+    method: str | None,
+    source_note: str | None,
+    as_of_date: date | None,
+) -> AdminWriteResult:
+    """Add or replace one utility-wide case-study scalar metric."""
+    return upsert_scalar_metric(
+        utility_id=utility_id,
+        wildfire_id=UTILITY_METRIC_SCOPE_ID,
+        metric_key=metric_key,
+        value=value,
+        unit=unit,
+        method=method,
+        source_note=source_note,
+        as_of_date=as_of_date,
+    )
+
+
 def upsert_pair_summary(
     *,
     utility_id: str,
@@ -228,10 +252,9 @@ def upsert_raster_asset(
 def replace_case_study_costs(
     *,
     utility_id: str,
-    wildfire_id: str,
     rows: list[CaseStudyCostInput],
 ) -> AdminWriteResult:
-    """Replace all raw economic-impact rows for one utility-wildfire pair."""
+    """Replace all raw economic-impact rows for one utility."""
     with tempfile.TemporaryDirectory(prefix="ember_admin_case_study_costs_") as tmp:
         output = Path(tmp) / "case_study_costs.updated.parquet"
         conn = duckdb.connect(database=":memory:")
@@ -239,7 +262,6 @@ def replace_case_study_costs(
             """
             CREATE TABLE edited (
                 utility_id VARCHAR,
-                wildfire_id VARCHAR,
                 item_type VARCHAR,
                 start_year INTEGER,
                 end_year INTEGER,
@@ -249,7 +271,9 @@ def replace_case_study_costs(
                 contributing_fires VARCHAR,
                 source VARCHAR,
                 method VARCHAR,
-                description_and_notes VARCHAR
+                degree_of_causation VARCHAR,
+                description_and_notes VARCHAR,
+                extra_fields_json VARCHAR
             )
             """
         )
@@ -268,23 +292,44 @@ def replace_case_study_costs(
                 existing_path = local_path
 
         if existing_path is not None:
+            existing_columns = {
+                column[0]
+                for column in conn.execute(
+                    "DESCRIBE SELECT * FROM read_parquet(?)",
+                    [existing_path.as_posix()],
+                ).fetchall()
+            }
+            degree_of_causation = (
+                "degree_of_causation"
+                if "degree_of_causation" in existing_columns
+                else "CAST(NULL AS VARCHAR)"
+            )
+            extra_fields_json = (
+                "extra_fields_json"
+                if "extra_fields_json" in existing_columns
+                else "CAST(NULL AS VARCHAR)"
+            )
             conn.execute(
-                """
+                f"""
                 INSERT INTO edited
-                SELECT * FROM read_parquet(?)
-                WHERE utility_id <> ? OR wildfire_id <> ?
+                SELECT
+                    utility_id, item_type, start_year, end_year,
+                    description, raw_cost, inflation_adjusted_cost,
+                    contributing_fires, source, method, {degree_of_causation},
+                    description_and_notes, {extra_fields_json}
+                FROM read_parquet(?)
+                WHERE utility_id <> ?
                 """,
-                [existing_path.as_posix(), utility_id, wildfire_id],
+                [existing_path.as_posix(), utility_id],
             )
 
         conn.executemany(
             """
-            INSERT INTO edited VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO edited VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 [
                     utility_id,
-                    wildfire_id,
                     row.item_type,
                     row.start_year,
                     row.end_year,
@@ -294,7 +339,9 @@ def replace_case_study_costs(
                     row.contributing_fires,
                     row.source,
                     row.method,
+                    row.degree_of_causation,
                     row.description_and_notes,
+                    row.extra_fields_json,
                 ]
                 for row in rows
             ],

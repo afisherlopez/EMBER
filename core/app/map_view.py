@@ -11,7 +11,7 @@ import streamlit as st
 from branca.element import MacroElement, Template
 from streamlit_folium import st_folium
 
-from core.models import MetricDefinition, RasterAsset, Utility, Wildfire
+from core.models import MetricDefinition, RasterAsset, Utility, UtilitySource, Wildfire
 from core.settings import settings
 from core.states import DataState
 
@@ -275,15 +275,47 @@ def _folium_compatible_feature_collection(feature_collection: dict) -> dict:
 
 def render_overview_map(
     source_watersheds: dict,
+    service_areas: dict,
     burn_perimeters: dict,
     burn_severity_years: list[int],
     *,
     map_key: str,
 ) -> None:
-    """Render statewide source, fire, and optional burn-severity layers."""
+    """Render statewide service, source, fire, and optional severity layers."""
     source_watersheds = _folium_compatible_feature_collection(source_watersheds)
+    service_areas = _folium_compatible_feature_collection(service_areas)
     burn_perimeters = _folium_compatible_feature_collection(burn_perimeters)
     m = folium.Map(location=[44.5, -121.0], zoom_start=6, control_scale=True)
+
+    if service_areas["features"]:
+        service_group = folium.FeatureGroup(
+            name=f"Utility service areas ({len(service_areas['features']):,})",
+            show=True,
+        )
+        folium.GeoJson(
+            service_areas,
+            marker=folium.CircleMarker(
+                radius=7,
+                color="#2ca02c",
+                weight=2,
+                fill=True,
+                fill_color="#2ca02c",
+                fill_opacity=0.9,
+            ),
+            style_function=lambda _: {
+                "color": "#2ca02c",
+                "weight": 1.5,
+                "fillColor": "#2ca02c",
+                "fillOpacity": 0.10,
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=["name", "state"],
+                aliases=["Utility:", "State:"],
+                sticky=False,
+            ),
+            smooth_factor=0.5,
+        ).add_to(service_group)
+        service_group.add_to(m)
 
     watershed_group = folium.FeatureGroup(
         name=f"Source watersheds ({len(source_watersheds['features']):,})",
@@ -349,10 +381,112 @@ def render_overview_map(
     )
 
 
+def render_utility_case_study_map(
+    utility: Utility,
+    source_area_geojson: dict | None,
+    service_area_geojson: dict | None,
+    utility_sources: list[UtilitySource],
+    wildfire_geojson: dict,
+) -> None:
+    """Render utility context and its spatially intersecting wildfire perimeters."""
+    m = folium.Map(
+        location=[utility.centroid_lat, utility.centroid_lon],
+        zoom_start=9,
+        control_scale=True,
+    )
+    points: list[tuple[float, float]] = []
+
+    if service_area_geojson is not None:
+        folium.GeoJson(
+            service_area_geojson,
+            name="Utility service area",
+            marker=folium.CircleMarker(
+                radius=7,
+                color="#2ca02c",
+                weight=2,
+                fill=True,
+                fill_color="#2ca02c",
+                fill_opacity=0.9,
+            ),
+            style_function=lambda _: _geojson_style("#2ca02c"),
+        ).add_to(m)
+        points += _feature_bounds(service_area_geojson)
+    if source_area_geojson is not None:
+        folium.GeoJson(
+            source_area_geojson,
+            name="Source water area",
+            style_function=lambda _: _geojson_style("#1f77b4"),
+        ).add_to(m)
+        points += _feature_bounds(source_area_geojson)
+
+    mapped_sources = [
+        source
+        for source in utility_sources
+        if source.latitude is not None and source.longitude is not None
+    ]
+    if mapped_sources:
+        source_group = folium.FeatureGroup(
+            name=f"Connected source locations ({len(mapped_sources)})"
+        )
+        for source in mapped_sources:
+            folium.CircleMarker(
+                location=[source.latitude, source.longitude],
+                radius=6,
+                color="#1f77b4",
+                weight=2,
+                fill=True,
+                fill_color="#1f77b4",
+                fill_opacity=0.8,
+                tooltip=f"{source.source_name} — {source.source_type}",
+            ).add_to(source_group)
+            points.append((source.latitude, source.longitude))
+        source_group.add_to(m)
+
+    compatible_wildfires = _folium_compatible_feature_collection(wildfire_geojson)
+    if compatible_wildfires["features"]:
+        wildfire_group = folium.FeatureGroup(
+            name=f"Wildfire boundaries ({len(compatible_wildfires['features'])})"
+        )
+        folium.GeoJson(
+            compatible_wildfires,
+            style_function=lambda _: {
+                "color": "#d62728",
+                "weight": 2,
+                "fillColor": "#d62728",
+                "fillOpacity": 0.18,
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=["name", "year", "acres"],
+                aliases=["Wildfire:", "Year:", "Burned acres:"],
+                sticky=False,
+            ),
+        ).add_to(wildfire_group)
+        wildfire_group.add_to(m)
+        points += _feature_bounds(compatible_wildfires)
+
+    if points:
+        latitudes = [point[0] for point in points]
+        longitudes = [point[1] for point in points]
+        m.fit_bounds(
+            [[min(latitudes), min(longitudes)], [max(latitudes), max(longitudes)]]
+        )
+
+    folium.LayerControl(collapsed=False).add_to(m)
+    st_folium(
+        m,
+        key=f"case_study_map_{utility.utility_id}",
+        height=360,
+        use_container_width=True,
+        returned_objects=[],
+    )
+
+
 def render_map(
     utility: Utility,
     wildfire: Wildfire,
-    utility_geojson: dict,
+    source_area_geojson: dict | None,
+    service_area_geojson: dict | None,
+    utility_sources: list[UtilitySource],
     wildfire_geojson: dict,
     raster_metric: MetricDefinition | None,
     raster_asset: RasterAsset | None,
@@ -377,10 +511,59 @@ def render_map(
             year_control=False,
         )
 
-    folium.GeoJson(utility_geojson, name="Source area", style_function=lambda _: _geojson_style("blue")).add_to(m)
+    if service_area_geojson is not None:
+        folium.GeoJson(
+            service_area_geojson,
+            name="Utility service area",
+            marker=folium.CircleMarker(
+                radius=7,
+                color="#2ca02c",
+                weight=2,
+                fill=True,
+                fill_color="#2ca02c",
+                fill_opacity=0.9,
+            ),
+            style_function=lambda _: _geojson_style("#2ca02c"),
+        ).add_to(m)
+    if source_area_geojson is not None:
+        folium.GeoJson(
+            source_area_geojson,
+            name="Source water area",
+            style_function=lambda _: _geojson_style("#1f77b4"),
+        ).add_to(m)
+    mapped_sources = [
+        source
+        for source in utility_sources
+        if source.latitude is not None and source.longitude is not None
+    ]
+    if mapped_sources:
+        source_group = folium.FeatureGroup(
+            name=f"Connected source locations ({len(mapped_sources)})"
+        )
+        for source in mapped_sources:
+            folium.CircleMarker(
+                location=[source.latitude, source.longitude],
+                radius=6,
+                color="#1f77b4",
+                weight=2,
+                fill=True,
+                fill_color="#1f77b4",
+                fill_opacity=0.8,
+                tooltip=f"{source.source_name} — {source.source_type}",
+            ).add_to(source_group)
+        source_group.add_to(m)
     folium.GeoJson(wildfire_geojson, name="Wildfire perimeter", style_function=lambda _: _geojson_style("red")).add_to(m)
 
-    points = _feature_bounds(utility_geojson) + _feature_bounds(wildfire_geojson)
+    points = _feature_bounds(wildfire_geojson)
+    if service_area_geojson is not None:
+        points += _feature_bounds(service_area_geojson)
+    if source_area_geojson is not None:
+        points += _feature_bounds(source_area_geojson)
+    points += [
+        (source.latitude, source.longitude)
+        for source in mapped_sources
+        if source.latitude is not None and source.longitude is not None
+    ]
     if points:
         latitudes = [point[0] for point in points]
         longitudes = [point[1] for point in points]

@@ -15,15 +15,20 @@ import streamlit as st  # noqa: E402
 from streamlit_folium import st_folium  # noqa: E402
 
 from core.app.map_view import add_burn_severity_layer  # noqa: E402
+from core.app.utility_sources import render_utility_sources  # noqa: E402
 from core.catalog import Catalog  # noqa: E402
-from core.models import IntersectingWildfire, Utility  # noqa: E402
+from core.models import IntersectingWildfire, Utility, UtilitySource  # noqa: E402
 
 # Rendering many perimeters is the browser's bottleneck; cap and warn beyond this.
 MAX_PERIMETERS_ON_MAP = 400
 
 
-def _utility_style(_: dict) -> dict:
+def _source_area_style(_: dict) -> dict:
     return {"color": "#1f77b4", "weight": 2, "fillColor": "#1f77b4", "fillOpacity": 0.12}
+
+
+def _service_area_style(_: dict) -> dict:
+    return {"color": "#2ca02c", "weight": 2, "fillColor": "#2ca02c", "fillOpacity": 0.12}
 
 
 def _fire_style(_: dict) -> dict:
@@ -49,6 +54,19 @@ def _format_overlap_pct(pct: float | None) -> str | None:
     if 0 < pct < 0.1:
         return "< 0.1"
     return f"{pct:.1f}"
+
+
+def _format_impact_basis(value: str | None) -> str:
+    labels = {
+        "service_area": "Service area",
+        "source_location": "Connected source location",
+        "source_area": "Source-water area",
+    }
+    return " and ".join(
+        labels.get(item, item.replace("_", " ").title())
+        for item in (value or "").split(",")
+        if item
+    )
 
 
 def _render_overlap_chart(
@@ -96,7 +114,9 @@ def _render_overlap_chart(
 
 def _render_map(
     utility: Utility,
-    utility_geojson: dict,
+    source_area_geojson: dict | None,
+    service_area_geojson: dict | None,
+    sources: list[UtilitySource],
     fires: list[IntersectingWildfire],
     burn_severity_years: list[int],
 ) -> None:
@@ -109,21 +129,64 @@ def _render_map(
         fmap,
         burn_severity_years,
         show=False,
-        year_control=True,
+        year_control=False,
     )
 
-    folium.GeoJson(
-        utility_geojson, name=f"{utility.name} source area", style_function=_utility_style
-    ).add_to(fmap)
-    _collect_points(utility_geojson["geometry"], bounds_points)
+    if service_area_geojson is not None:
+        folium.GeoJson(
+            service_area_geojson,
+            name=f"{utility.name} service area",
+            marker=folium.CircleMarker(
+                radius=7,
+                color="#2ca02c",
+                weight=2,
+                fill=True,
+                fill_color="#2ca02c",
+                fill_opacity=0.9,
+            ),
+            style_function=_service_area_style,
+        ).add_to(fmap)
+        _collect_points(service_area_geojson["geometry"], bounds_points)
+    if source_area_geojson is not None:
+        folium.GeoJson(
+            source_area_geojson,
+            name=f"{utility.name} source water area",
+            style_function=_source_area_style,
+        ).add_to(fmap)
+        _collect_points(source_area_geojson["geometry"], bounds_points)
+    mapped_sources = [
+        source
+        for source in sources
+        if source.latitude is not None and source.longitude is not None
+    ]
+    if mapped_sources:
+        source_group = folium.FeatureGroup(
+            name=f"Connected source locations ({len(mapped_sources)})"
+        )
+        for source in mapped_sources:
+            folium.CircleMarker(
+                location=[source.latitude, source.longitude],
+                radius=6,
+                color="#1f77b4",
+                weight=2,
+                fill=True,
+                fill_color="#1f77b4",
+                fill_opacity=0.8,
+                tooltip=f"{source.source_name} — {source.source_type}",
+            ).add_to(source_group)
+            bounds_points.append((source.latitude, source.longitude))
+        source_group.add_to(fmap)
 
     shown = fires[:MAX_PERIMETERS_ON_MAP]
-    fire_group = folium.FeatureGroup(name=f"Wildfire perimeters ({len(shown)})")
+    fire_group = folium.FeatureGroup(name=f"Intersecting wildfires ({len(shown)})")
     for fire in shown:
         geometry = json.loads(fire.geometry_geojson)
-        pct = _format_overlap_pct(fire.overlap_pct_of_source)
-        pct_text = f"{pct}%" if pct is not None else "n/a"
-        tooltip = f"{fire.name} ({fire.ignition_year}) — {pct_text} of source area"
+        if fire.impact_basis and fire.impact_basis != "source_area":
+            impact_text = _format_impact_basis(fire.impact_basis)
+        else:
+            pct = _format_overlap_pct(fire.overlap_pct_of_source)
+            impact_text = f"{pct}% of source area" if pct is not None else "Source area"
+        tooltip = f"{fire.name} ({fire.ignition_year}) — {impact_text}"
         folium.GeoJson(
             {"type": "Feature", "geometry": geometry, "properties": {}},
             style_function=_fire_style,
@@ -131,7 +194,7 @@ def _render_map(
         ).add_to(fire_group)
         _collect_points(geometry, bounds_points)
     fire_group.add_to(fmap)
-    folium.LayerControl(collapsed=True).add_to(fmap)
+    folium.LayerControl(collapsed=False).add_to(fmap)
 
     if bounds_points:
         lats = [p[0] for p in bounds_points]
@@ -148,7 +211,7 @@ def render_case_study_view(
     available_burn_severity_years: set[int],
 ) -> None:
     """Render the 'select a utility + year range -> intersecting wildfires' view."""
-    st.subheader("Wildfires intersecting a utility's source area")
+    st.subheader("Wildfires intersecting a utility's source or service area")
 
     utility_states = sorted({u.state for u in utilities})
     state_col, control_col, year_col = st.columns([1, 2, 3])
@@ -191,53 +254,119 @@ def render_case_study_view(
 
     utility = next(u for u in filtered_utilities if u.utility_id == utility_id)
     fires = catalog.list_intersecting_wildfires(utility_id, year_range[0], year_range[1])
-    utility_geojson = catalog.get_geojson("utilities", utility_id, simplify_tolerance=0.0)
+    source_area_geojson = catalog.get_utility_geojson(utility_id, "source")
+    service_area_geojson = catalog.get_utility_geojson(utility_id, "service")
+    sources = catalog.list_utility_sources(utility_id)
 
-    if not fires:
-        _render_map(utility, utility_geojson, [], [])
-        st.warning(
-            f"No wildfires intersected {utility.name}'s source area between "
-            f"{year_range[0]} and {year_range[1]}."
-        )
-        return
-
-    st.markdown(
-        f"**{len(fires)}** wildfire(s) intersected **{utility.name}**'s source area "
-        f"between **{year_range[0]}** and **{year_range[1]}**."
+    severity_years = sorted(
+        {
+            fire.ignition_year
+            for fire in fires
+            if fire.ignition_year in available_burn_severity_years
+        },
+        reverse=True,
     )
-    if len(fires) > MAX_PERIMETERS_ON_MAP:
-        st.caption(
-            f"Showing the {MAX_PERIMETERS_ON_MAP} largest-overlap perimeters on the map; "
-            "the table below lists all of them."
+    map_col, panel_col = st.columns([3, 2], gap="large")
+    with map_col:
+        _render_map(
+            utility,
+            source_area_geojson,
+            service_area_geojson,
+            sources,
+            fires,
+            severity_years,
         )
 
-    map_col, table_col = st.columns([3, 2], gap="large")
-    with map_col:
-        severity_years = sorted(
-            {
-                fire.ignition_year
-                for fire in fires
-                if fire.ignition_year in available_burn_severity_years
-            },
-            reverse=True,
-        )
-        _render_map(utility, utility_geojson, fires, severity_years)
-    with table_col:
-        st.dataframe(
-            [
+    with panel_col:
+        if sources:
+            render_utility_sources(sources, compact=True)
+        st.subheader("Intersecting wildfires")
+
+        if not fires:
+            if utility.state == "CA":
+                st.warning(
+                    f"No wildfires overlapped {utility.name}'s service area or connected "
+                    f"source locations between {year_range[0]} and {year_range[1]}."
+                )
+            elif source_area_geojson is None and service_area_geojson is not None:
+                st.warning(
+                    f"No wildfires intersected {utility.name}'s mapped service location "
+                    f"between {year_range[0]} and {year_range[1]}."
+                )
+            elif source_area_geojson is None:
+                st.warning(
+                    f"No mapped source-water area is available for {utility.name}, "
+                    "so wildfire intersections cannot be calculated yet."
+                )
+            else:
+                st.warning(
+                    f"No wildfires intersected {utility.name}'s source area between "
+                    f"{year_range[0]} and {year_range[1]}."
+                )
+            return
+
+        if utility.state == "CA":
+            st.markdown(
+                f"**{len(fires)}** wildfire(s) overlapped **{utility.name}**'s service "
+                f"area or connected source locations between **{year_range[0]}** and "
+                f"**{year_range[1]}**."
+            )
+        elif source_area_geojson is None and service_area_geojson is not None:
+            st.markdown(
+                f"**{len(fires)}** wildfire(s) intersected **{utility.name}**'s mapped "
+                f"service location between **{year_range[0]}** and **{year_range[1]}**."
+            )
+        else:
+            st.markdown(
+                f"**{len(fires)}** wildfire(s) intersected **{utility.name}**'s source area "
+                f"between **{year_range[0]}** and **{year_range[1]}**."
+            )
+        if len(fires) > MAX_PERIMETERS_ON_MAP:
+            st.caption(
+                f"Showing the {MAX_PERIMETERS_ON_MAP} largest-overlap perimeters on the map; "
+                "the table below lists all of them."
+            )
+
+        if utility.state == "CA" or source_area_geojson is None:
+            table_rows = [
                 {
                     "Wildfire": fire.name,
-                    "Year": str(fire.ignition_year) if fire.ignition_year is not None else None,
+                    "Year": (
+                        str(fire.ignition_year)
+                        if fire.ignition_year is not None
+                        else None
+                    ),
                     "Acres": round(fire.acres) if fire.acres is not None else None,
-                    "Overlap % of source": _format_overlap_pct(fire.overlap_pct_of_source),
+                    "Affected feature": _format_impact_basis(fire.impact_basis),
+                }
+                for fire in fires
+            ]
+        else:
+            table_rows = [
+                {
+                    "Wildfire": fire.name,
+                    "Year": (
+                        str(fire.ignition_year)
+                        if fire.ignition_year is not None
+                        else None
+                    ),
+                    "Acres": round(fire.acres) if fire.acres is not None else None,
+                    "Overlap % of source": _format_overlap_pct(
+                        fire.overlap_pct_of_source
+                    ),
                     "Overlap km²": (
-                        round(fire.overlap_area_km2, 2) if fire.overlap_area_km2 is not None else None
+                        round(fire.overlap_area_km2, 2)
+                        if fire.overlap_area_km2 is not None
+                        else None
                     ),
                 }
                 for fire in fires
-            ],
+            ]
+        st.dataframe(
+            table_rows,
             width="stretch",
             hide_index=True,
         )
-        st.markdown("**Overlap area over time**")
-        _render_overlap_chart(fires, year_range[0], year_range[1])
+        if utility.state != "CA" and source_area_geojson is not None:
+            st.markdown("**Overlap area over time**")
+            _render_overlap_chart(fires, year_range[0], year_range[1])
