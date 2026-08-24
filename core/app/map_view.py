@@ -6,37 +6,15 @@ from typing import Any
 from urllib.parse import urlencode
 
 import folium
-import requests
 import streamlit as st
 from branca.element import MacroElement, Template
 from streamlit_folium import st_folium
 
-from core.models import MetricDefinition, RasterAsset, Utility, UtilitySource, Wildfire
+from core.models import Utility, UtilitySource
 from core.settings import settings
-from core.states import DataState
 
 # Dashboard scope: California/Colorado through Oregon/Washington.
 OVERVIEW_BOUNDS = [[32.3, -125.0], [49.2, -102.0]]
-
-
-def cog_tilejson_url(asset: RasterAsset, metric: MetricDefinition) -> str:
-    """Build TiTiler tilejson endpoint URL for one raster asset."""
-    colormap_name = asset.colormap_name or metric.default_colormap or "ylorbr"
-    rescale_min = asset.rescale_min
-    rescale_max = asset.rescale_max
-    if rescale_min is None or rescale_max is None:
-        default = metric.default_rescale or (0.0, 100.0)
-        rescale_min, rescale_max = default
-    query = urlencode(
-        {
-            "url": asset.cog_uri,
-            "rescale": f"{rescale_min},{rescale_max}",
-            "colormap_name": colormap_name,
-        }
-    )
-    return f"{settings.tiler_url.rstrip('/')}/cog/WebMercatorQuad/tilejson.json?{query}"
-
-
 class BurnSeverityControl(MacroElement):
     """Leaflet control for selecting years on an existing severity tile layer."""
 
@@ -476,105 +454,6 @@ def render_utility_case_study_map(
         m,
         key=f"case_study_map_{utility.utility_id}",
         height=360,
-        use_container_width=True,
-        returned_objects=[],
-    )
-
-
-def render_map(
-    utility: Utility,
-    wildfire: Wildfire,
-    source_area_geojson: dict | None,
-    service_area_geojson: dict | None,
-    utility_sources: list[UtilitySource],
-    wildfire_geojson: dict,
-    raster_metric: MetricDefinition | None,
-    raster_asset: RasterAsset | None,
-    raster_state: DataState,
-    burn_severity_year: int | None = None,
-    height: int = 500,
-) -> None:
-    """Render display-only Folium map with optional raster tile layer."""
-    m = folium.Map(location=[utility.centroid_lat, utility.centroid_lon], zoom_start=9, control_scale=True)
-
-    if raster_metric and raster_asset and raster_state == "available":
-        tilejson_resp = requests.get(cog_tilejson_url(raster_asset, raster_metric), timeout=5)
-        tilejson_resp.raise_for_status()
-        tile_url = tilejson_resp.json()["tiles"][0]
-        folium.TileLayer(tiles=tile_url, name=raster_metric.display_name, attr="EMBER/TiTiler", overlay=True).add_to(m)
-
-    if burn_severity_year is not None:
-        add_burn_severity_layer(
-            m,
-            [burn_severity_year],
-            show=False,
-            year_control=False,
-        )
-
-    if service_area_geojson is not None:
-        folium.GeoJson(
-            service_area_geojson,
-            name="Utility service area",
-            marker=folium.CircleMarker(
-                radius=7,
-                color="#2ca02c",
-                weight=2,
-                fill=True,
-                fill_color="#2ca02c",
-                fill_opacity=0.9,
-            ),
-            style_function=lambda _: _geojson_style("#2ca02c"),
-        ).add_to(m)
-    if source_area_geojson is not None:
-        folium.GeoJson(
-            source_area_geojson,
-            name="Source water area",
-            style_function=lambda _: _geojson_style("#1f77b4"),
-        ).add_to(m)
-    mapped_sources = [
-        source
-        for source in utility_sources
-        if source.latitude is not None and source.longitude is not None
-    ]
-    if mapped_sources:
-        source_group = folium.FeatureGroup(
-            name=f"Connected source locations ({len(mapped_sources)})"
-        )
-        for source in mapped_sources:
-            folium.CircleMarker(
-                location=[source.latitude, source.longitude],
-                radius=6,
-                color="#1f77b4",
-                weight=2,
-                fill=True,
-                fill_color="#1f77b4",
-                fill_opacity=0.8,
-                tooltip=f"{source.source_name} — {source.source_type}",
-            ).add_to(source_group)
-        source_group.add_to(m)
-    folium.GeoJson(wildfire_geojson, name="Wildfire perimeter", style_function=lambda _: _geojson_style("red")).add_to(m)
-
-    points = _feature_bounds(wildfire_geojson)
-    if service_area_geojson is not None:
-        points += _feature_bounds(service_area_geojson)
-    if source_area_geojson is not None:
-        points += _feature_bounds(source_area_geojson)
-    points += [
-        (source.latitude, source.longitude)
-        for source in mapped_sources
-        if source.latitude is not None and source.longitude is not None
-    ]
-    if points:
-        latitudes = [point[0] for point in points]
-        longitudes = [point[1] for point in points]
-        m.fit_bounds([[min(latitudes), min(longitudes)], [max(latitudes), max(longitudes)]])
-
-    folium.LayerControl(collapsed=True).add_to(m)
-
-    # Disable returning map interaction payloads so pan/zoom does not trigger app reruns.
-    st_folium(
-        m,
-        height=height,
         use_container_width=True,
         returned_objects=[],
     )

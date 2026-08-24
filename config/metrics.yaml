@@ -9,15 +9,3 @@ metrics:
     kind: scalar
     unit: USD
     value_format: "${:,.0f}"
-  sediment_yield_increase:
-    display_name: "Increase in sediment yield"
-    kind: raster
-    unit: "tonnes/km^2/yr"
-    default_colormap: ylorbr
-    default_rescale: [0, 100]
-  turbidity_increase:
-    display_name: "Increase in turbidity"
-    kind: raster
-    unit: "NTU"
-    default_colormap: ylorbr
-    default_rescale: [0, 50]

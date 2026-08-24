@@ -1,0 +1,16 @@
+# Streamlit Community Cloud dependencies.
+# The separately deployed burn-severity tiler has its own requirements file.
+streamlit==1.59.2
+streamlit-folium==0.22.0
+folium==0.17.0
+matplotlib==3.9.2
+duckdb==1.3.2
+numpy==1.26.4
+PyYAML==6.0.2
+gcsfs==2024.6.1
+fsspec==2024.6.1
+google-cloud-storage==2.18.2
+pydantic==2.9.2
+pydantic-settings==2.5.2
+certifi
+pillow==12.3.0

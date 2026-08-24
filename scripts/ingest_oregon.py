@@ -13,7 +13,6 @@ and writes the catalog's Parquet tables under ``<data_root>/tables``:
   - ``wildfires.parquet``      (MTBS perimeters for the state, one row per fire)
   - ``pair_summary.parquet``   (overlapping utility x wildfire pairs, with area/pct)
   - ``scalar_metrics.parquet`` (empty schema placeholder until metrics exist)
-  - ``raster_assets.parquet``  (empty schema placeholder until COGs exist)
 
 All geometry math is done in DuckDB's ``spatial`` extension. Area/overlap is computed
 in EPSG:5070 (CONUS Albers, meters); geometries for display are simplified and stored
@@ -190,7 +189,7 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
         """
     )
 
-    # Empty placeholders so the catalog's read_parquet calls succeed before metrics exist.
+    # Empty placeholder so scalar metric reads succeed before metrics exist.
     conn.execute(
         f"""
         COPY (
@@ -201,19 +200,6 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
                 CAST(NULL AS VARCHAR) AS source_note, CAST(NULL AS DATE) AS as_of_date
             WHERE FALSE
         ) TO '{(tables_dir / "scalar_metrics.parquet").as_posix()}' (FORMAT PARQUET)
-        """
-    )
-    conn.execute(
-        f"""
-        COPY (
-            SELECT
-                CAST(NULL AS VARCHAR) AS utility_id, CAST(NULL AS VARCHAR) AS wildfire_id,
-                CAST(NULL AS VARCHAR) AS metric_key, CAST(NULL AS VARCHAR) AS cog_uri,
-                CAST(NULL AS VARCHAR) AS units, CAST(NULL AS VARCHAR) AS colormap_name,
-                CAST(NULL AS DOUBLE) AS rescale_min, CAST(NULL AS DOUBLE) AS rescale_max,
-                CAST(NULL AS DOUBLE) AS nodata, CAST(NULL AS DATE) AS as_of_date
-            WHERE FALSE
-        ) TO '{(tables_dir / "raster_assets.parquet").as_posix()}' (FORMAT PARQUET)
         """
     )
     has_utility_sources = conn.execute(

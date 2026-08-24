@@ -177,32 +177,16 @@ Once you've done the one-time setup above, starting EMBER again is quick. Open T
 
 ## For developers
 
-EMBER is a read-only Streamlit dashboard over precalculated assets (Parquet and GeoTIFFs), with dynamic raster tiles served by TiTiler. `scripts/run_local.sh` (used above) wires the two processes together against the bundled sample data.
+EMBER is a Streamlit dashboard over precalculated Parquet data. Burn-severity
+GeoTIFFs are the only runtime raster layer and are rendered by a small custom
+rio-tiler service. `scripts/run_local.sh` starts both local processes.
 
 ### Architecture
 
 ```text
-                 +---------------------------+
-                 |      Streamlit app        |
-                 |  core/app/streamlit_app   |
-                 +------------+--------------+
-                              |
-                   (feature + map requests)
-                              |
-          +-------------------+---------------------+
-          |                                         |
-+---------v-----------------+          +------------v-------------+
-| DuckDB catalog layer      |          | TiTiler FastAPI service  |
-| core/catalog.py           |          | core/tiler/main.py       |
-| spatial + gcsfs (gs://)   |          | /cog/* endpoints         |
-+------------+--------------+          +------------+-------------+
-             |                                      |
-             | reads Parquet/GeoParquet             | reads COGs
-             |                                      |
-     +-------v--------------------------------------v-------+
-     |         Storage backend (local | gcs)               |
-     |         core/storage.py                             |
-     +-----------------------------------------------------+
+Browser
+  |-- dashboard --> Streamlit Community Cloud --> private GCS Parquet/PDFs
+  `-- PNG tiles --> Cloud Run burn-severity tiler --> private GCS COGs
 ```
 
 ### Manual local run (two processes)
@@ -216,7 +200,7 @@ TILER_URL=http://localhost:8000 streamlit run core/app/streamlit_app.py --server
 ```
 
 - App: `http://localhost:8501` · Tiler health: `http://localhost:8000/healthz`
-- The tiler mounts TiTiler under `/cog` (e.g. `/cog/WebMercatorQuad/tilejson.json`) and is restricted to datasets under the configured storage prefix.
+- The tiler exposes `/burn-severity/tiles/{z}/{x}/{y}.png` and `/healthz` only.
 - `run_local.sh` accepts `APP_PORT` (default 8501) and `TILER_PORT` (default 8000) overrides.
 
 ### Previewing real GCS data locally
@@ -230,7 +214,10 @@ GCS_PREFIX=EMBER
 GOOGLE_APPLICATION_CREDENTIALS=./secrets/ember-sa.json   # read-only service-account JSON
 ```
 
-A single read-only service account authenticates every reader: DuckDB (Parquet via `gcsfs`), GDAL/TiTiler (COGs via native `gs://`), and the storage client — no HMAC keys. On Cloud Run, leave `GOOGLE_APPLICATION_CREDENTIALS` blank and attach the service account (Application Default Credentials).
+A single read-only service account authenticates every reader: DuckDB (Parquet via
+`gcsfs`), GDAL/rio-tiler (COGs via native `gs://`), and the storage client. On
+Cloud Run, leave `GOOGLE_APPLICATION_CREDENTIALS` blank and attach the service
+account through Application Default Credentials.
 
 > The reader SA is scoped to the `EMBER/` prefix via a bucket IAM **condition**. GCS conditions must use the full object-resource form, e.g. `resource.name.startsWith("projects/_/buckets/data_main_gcs/objects/EMBER/")` — a bare `EMBER/` prefix matches nothing and denies all reads. Object reads (`storage.objects.get`) work under this condition; `storage.objects.list` does not, and the app only needs `get`.
 
@@ -267,38 +254,18 @@ already exist, and writes `fire_burn_severity/cogs/manifest.json`. The dashboard
 uses that manifest to provide an in-map Burn Severity control. Multiple years
 can be selected; overlapping pixels use the most recent selected year.
 
-### Deploy to Cloud Run
+### Production deployment
 
-Two services (app + tiler) build from one `Dockerfile`; `scripts/entrypoint.sh` selects the process via the `SERVICE` env var and binds to `$PORT`.
-
-One-time setup:
-
-```bash
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
-gcloud artifacts repositories create ember --repository-format=docker --location=us-central1
-```
-
-Deploy (builds, deploys tiler + app, wires `TILER_URL` and the tiler's `CORS_ORIGINS`):
+The supported setup is the app on Streamlit Community Cloud and the burn-severity
+tiler on Cloud Run. Follow [the deployment guide](docs/deployment.md). The
+tiler-only deploy command is:
 
 ```bash
-PROJECT_ID=data-gcp-main \
-GCS_BUCKET=data_main_gcs \
-GCS_PREFIX=EMBER \
-SERVICE_ACCOUNT=ember-reader@data-gcp-main.iam.gserviceaccount.com \
+STREAMLIT_ORIGIN=https://ember-dashboard.streamlit.app \
 ./scripts/deploy_cloudrun.sh
 ```
 
-Optional arguments: `REGION` (default `us-central1`), `REPO`, `TILER_SERVICE`, `APP_SERVICE`, `IMAGE_TAG`. The public app and tiler read the bucket server-side; the bucket itself stays private.
-
-**Public access:** the script requests `--allow-unauthenticated`, but setting that binding needs `run.services.setIamPolicy` (`roles/run.admin` or Owner) — `roles/editor` can deploy but cannot open a service to the public. To make the services reachable without a Google identity token, an Owner (Jillian or Gregg) needs to run:
-
-```bash
-gcloud run services add-iam-policy-binding ember-app   --region=us-central1 --member=allUsers --role=roles/run.invoker --project=data-gcp-main
-gcloud run services add-iam-policy-binding ember-tiler --region=us-central1 --member=allUsers --role=roles/run.invoker --project=data-gcp-main
-```
-
-To preview a private service in your browser without opening it publicly:
-`gcloud run services proxy ember-app --region=us-central1 --project=data-gcp-main`, then open `http://localhost:8080`.
+The script does not deploy or delete an app service on Cloud Run.
 
 ### Tests
 
@@ -309,11 +276,10 @@ pytest
 
 ### Extensibility contract
 
-- New metric: add to `config/metrics.yaml` and insert rows into `scalar_metrics` or `raster_assets`.
-- New profile: add to `config/profiles.yaml`.
-- New utility/wildfire: add geometry rows + pair/metric rows.
-
-Core code under `core/` should not change for any of these.
+- New scalar metric: add it to `config/metrics.yaml` and publish rows to
+  `scalar_metrics.parquet`.
+- New utility or wildfire: update the ingestion source and rebuild the catalog.
+- Burn severity: publish annual rasters with `scripts/publish_burn_severity.py`.
 
 ### Glossary
 

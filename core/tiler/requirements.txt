@@ -1,0 +1,8 @@
+# Cloud Run burn-severity tiler dependencies.
+fastapi==0.129.1
+uvicorn==0.30.6
+rio-tiler==6.8.0
+rasterio==1.4.4
+google-cloud-storage==2.18.2
+pydantic==2.9.2
+pydantic-settings==2.5.2

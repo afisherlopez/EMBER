@@ -28,7 +28,6 @@ from core.models import (
     IntersectingWildfire,
     MetricValue,
     PairSummary,
-    RasterAsset,
     Utility,
     UtilitySource,
     UTILITY_METRIC_SCOPE_ID,
@@ -314,13 +313,19 @@ class Catalog:
         ).fetchall()
         return [(int(year), float(area)) for year, area in rows]
 
-    def list_yearly_intersected_area(self) -> list[tuple[int, float]]:
-        """Sum utility source/service-area overlap with wildfires by ignition year."""
+    def list_yearly_intersected_area(
+        self, utility_state: str | None = None
+    ) -> list[tuple[int, float]]:
+        """Sum utility source/service-area overlap by fire year and optional utility state."""
         has_service_geometry = self._column_exists(
             "utilities", "service_area_geojson"
         )
         if has_service_geometry and not self._spatial_loaded:
-            self._conn.execute("LOAD spatial")
+            try:
+                self._conn.execute("LOAD spatial")
+            except duckdb.Error:
+                self._conn.execute("INSTALL spatial")
+                self._conn.execute("LOAD spatial")
             self._spatial_loaded = True
         impact_filter = (
             """
@@ -359,6 +364,8 @@ class Catalog:
             and self._column_exists("pair_summary", "impact_basis")
             else ""
         )
+        state_filter = "AND u.state = ?" if utility_state else ""
+        params = [utility_state] if utility_state else []
         rows = self._conn.execute(
             f"""
             WITH intersections AS (
@@ -376,6 +383,7 @@ class Catalog:
                 WHERE p.has_overlap
                   AND w.ignition_date IS NOT NULL
                   {impact_filter}
+                  {state_filter}
             )
             SELECT
                 ignition_year,
@@ -383,7 +391,8 @@ class Catalog:
             FROM intersections
             GROUP BY ignition_year
             ORDER BY ignition_year
-            """
+            """,
+            params,
         ).fetchall()
         return [(int(year), float(area)) for year, area in rows]
 
@@ -717,21 +726,6 @@ class Catalog:
             [utility_id],
         ).fetchall()
         return [UtilitySource(*row) for row in rows]
-
-    def get_raster_asset(self, utility_id: str, wildfire_id: str, metric_key: str) -> RasterAsset | None:
-        """Return raster asset payload for a selected pair and metric."""
-        row = self._conn.execute(
-            f"""
-            SELECT utility_id, wildfire_id, metric_key, cog_uri, units, colormap_name, rescale_min, rescale_max, nodata, as_of_date
-            FROM {self._table("raster_assets")}
-            WHERE utility_id = ? AND wildfire_id = ? AND metric_key = ?
-            LIMIT 1
-            """,
-            [utility_id, wildfire_id, metric_key],
-        ).fetchone()
-        if row is None:
-            return None
-        return RasterAsset(*row)
 
     def get_utility_geojson(self, utility_id: str, area_type: str) -> dict | None:
         """Return a utility's source or service area, when that geometry exists."""

@@ -1,15 +1,19 @@
 # ADR 0002: Dynamic tiling over pre-rendered tiles
 
 ## Status
-Accepted
+Accepted, narrowed to burn severity
 
 ## Context
-Raster metrics may grow over time and users need pan/zoom at arbitrary extents without storing many tile pyramids.
+Annual burn-severity rasters need pan/zoom at arbitrary extents without storing a
+separate XYZ tile pyramid.
 
 ## Decision
-Use TiTiler (`/cog` endpoints) to dynamically serve XYZ tiles from COG URIs.
+Use a custom FastAPI/rio-tiler endpoint to mosaic the published annual
+burn-severity COGs and dynamically serve PNG map tiles. The service does not expose
+generic COG URLs or the former TiTiler `/cog` routes.
 
 ## Consequences
 - Small storage footprint and no tile build pipeline in v1.
-- Styling (rescale/colormap) remains runtime-configurable per asset.
+- Burn-severity categories use one fixed application colormap.
+- Newest selected years win where annual rasters overlap.
 - Requires careful COG writing and GDAL tuning for performance.

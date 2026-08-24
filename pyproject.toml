@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ember-app"
 version = "0.1.0"
-description = "EMBER Streamlit dashboard for utility x wildfire lookups."
+description = "EMBER Streamlit dashboard for wildfire impacts on water utilities."
 readme = "README.md"
 requires-python = ">=3.11"
 # Runtime dependencies live in requirements.txt (the single source of truth) and are

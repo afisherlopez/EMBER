@@ -1,32 +1,47 @@
 # EMBER Architecture
 
-## Principles
+## Supported production architecture
 
-- Precompute all overlap and metrics offline, render by lookup at runtime.
-- Load only metadata on startup; load per `(utility_id, wildfire_id)` selection thereafter.
-- Serve raster maps as dynamic XYZ tiles from COG via TiTiler.
-- Keep metrics in tidy tables keyed by `metric_key`; extend by data/config rows only.
-- Keep storage concerns in one seam (`core/storage.py`) and env-based settings.
+EMBER has two independently deployed web processes:
 
-## Data Flow
+- The Streamlit application runs on Streamlit Community Cloud.
+- A small public Cloud Run service renders only burn-severity tiles.
 
-1. User selects profile, utility, wildfire in Streamlit.
-2. App fetches pair summary and metric payloads from `core/catalog.py`.
-3. For raster metrics, app requests tilejson from TiTiler and adds returned tile template.
-4. Utility boundary and wildfire perimeter are returned as simplified GeoJSON.
-5. Feature cards and export use one shared state resolver (`no_impact`, `pending`, `available`).
+Both processes read private objects from the `EMBER/` prefix in GCS. The app reads
+Parquet catalog tables and case-study documents. The tiler reads the annual
+burn-severity COG manifest and COGs. The browser requests public PNG tiles from
+`/burn-severity/tiles/{z}/{x}/{y}.png`; no generic user-supplied raster URL is exposed.
 
-## Storage and Credentials
+```text
+Browser
+  |-- app pages/data --> Streamlit Community Cloud --> private GCS Parquet/PDFs
+  `-- PNG map tiles --> Cloud Run burn-severity tiler --> private GCS COGs
+```
 
-- Storage location: GCS bucket (`gs://...`) or local filesystem (`file://...`).
-- Single credential model: one read-only service account authenticates every GCS reader.
-- TiTiler/GDAL auth (COGs): service account, native `gs://`/`/vsigs/` (JSON locally, attached SA in Cloud Run).
-- DuckDB auth for GCS Parquet: same service account via `gcsfs` (native `gs://`, Application Default Credentials). No HMAC keys.
+## Runtime data flow
 
-## Partitioning
+1. The app loads selector metadata and scalar metrics through `core/catalog.py`.
+2. Utility, wildfire, and case-study views query precomputed pair overlaps and
+   simplified geometry from Parquet.
+3. General Insights aggregates the published overlap and wildfire tables.
+4. Maps add a burn-severity tile layer using the years listed in the published
+   manifest.
+5. The tiler orders selected annual COGs newest-first and uses the first valid
+   categorical pixel, then applies the fixed burn-severity colormap.
 
-`scalar_metrics` and `raster_assets` should be written as Hive-partitioned datasets by `metric_key` (optionally year) to keep query scan cost stable as catalog grows.
+## Storage and credentials
 
-## Production Seam
+- Production data remains private in GCS.
+- Streamlit receives a service-account JSON through Streamlit Secrets.
+- Cloud Run uses its attached service account through Application Default
+  Credentials; no JSON key is stored in the container.
+- Read-only views need `storage.objects.get`. The in-app admin editor additionally
+  needs create/update access only for `EMBER/tables/` and `EMBER/backups/`.
+- The public tiler is constrained to burn-severity assets resolved from the fixed
+  manifest. CORS allows the deployed Streamlit origin.
 
-The recommended production setup is TiTiler on Cloud Run behind HTTPS load balancer + Cloud CDN. v1 keeps this as infrastructure documentation only.
+## Local development
+
+`scripts/run_local.sh` starts Streamlit and the same burn-severity tiler as two local
+processes. `core/storage.py` switches both local and GCS paths through environment
+settings. See `docs/deployment.md` for production setup.

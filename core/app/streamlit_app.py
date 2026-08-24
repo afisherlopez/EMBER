@@ -45,7 +45,7 @@ from core.app.map_view import render_overview_map, render_utility_case_study_map
 from core.app.selector_controls import render_case_study_selector
 from core.burn_severity import load_burn_severity_assets
 from core.catalog import Catalog
-from core.registry import load_registries
+from core.registry import load_metric_registry
 from core.storage import get_storage
 
 st.set_page_config(page_title="EMBER", layout="wide")
@@ -69,10 +69,10 @@ def cached_catalog(cache_version: int) -> Catalog:
 
 
 @st.cache_resource
-def cached_registries():
-    """Load and validate metric/profile registries once per process."""
+def cached_metric_registry():
+    """Load and validate scalar metric definitions once per process."""
     config_dir = Path(__file__).resolve().parents[2] / "config"
-    return load_registries(config_dir)
+    return load_metric_registry(config_dir / "metrics.yaml")
 
 
 @st.cache_data
@@ -175,6 +175,11 @@ def _render_admin_login_dialog() -> None:
 
 
 def _render_admin_launcher(current_view_mode: str) -> None:
+    if not admin_password_is_configured():
+        _clear_admin_login_query_param()
+        st.session_state["show_admin_login"] = False
+        return
+
     st.markdown(
         """
         <style>
@@ -277,7 +282,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    metrics_registry, _ = cached_registries()
+    metrics_registry = cached_metric_registry()
     catalog = cached_catalog(CATALOG_CACHE_VERSION)
     utilities = catalog.list_utilities()
 

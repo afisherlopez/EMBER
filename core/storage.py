@@ -52,7 +52,7 @@ class LocalStorage:
 
         A plain path (not a ``file://`` URI) is used because both consumers must read it:
         DuckDB cannot resolve percent-encoded ``file://`` URIs (e.g. when the path contains
-        spaces), and GDAL/TiTiler does not understand the ``file://`` scheme for local COGs.
+        spaces), and GDAL/rio-tiler does not understand the ``file://`` scheme for local COGs.
         Both, however, accept a plain absolute path.
         """
         return self._path_for(key).as_posix()

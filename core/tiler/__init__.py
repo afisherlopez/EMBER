@@ -1,1 +1,1 @@
-"""TiTiler service package."""
+"""EMBER burn-severity tile service package."""

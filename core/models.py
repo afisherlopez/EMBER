@@ -109,22 +109,6 @@ class CaseStudy:
 
 
 @dataclass(frozen=True)
-class RasterAsset:
-    """Raster metric asset descriptor used to build tile layer requests."""
-
-    utility_id: str
-    wildfire_id: str
-    metric_key: str
-    cog_uri: str
-    units: str | None
-    colormap_name: str | None
-    rescale_min: float | None
-    rescale_max: float | None
-    nodata: float | None
-    as_of_date: date | None
-
-
-@dataclass(frozen=True)
 class IntersectingWildfire:
     """A wildfire that overlaps a selected utility's source area, with overlap facts.
 
@@ -202,17 +186,6 @@ class MetricDefinition:
 
     key: str
     display_name: str
-    kind: Literal["scalar", "raster"]
+    kind: Literal["scalar"]
     unit: str | None = None
     value_format: str | None = None
-    default_colormap: str | None = None
-    default_rescale: tuple[float, float] | None = None
-
-
-@dataclass(frozen=True)
-class ProfileDefinition:
-    """Profile registry entry loaded from `config/profiles.yaml`."""
-
-    key: str
-    label: str
-    features: list[str]

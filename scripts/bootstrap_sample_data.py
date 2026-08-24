@@ -5,54 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
-import numpy as np
-import rasterio
-from rasterio.transform import from_origin
-
-
-def _write_sample_raster(path: Path, value_scale: float) -> None:
-    """Write a small web-mercator raster usable by TiTiler in local mode."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        return
-    data = np.array(
-        [[10, 12, 14, 16], [8, 10, 11, 13], [5, 6, 8, 9], [2, 3, 4, 5]],
-        dtype=np.float32,
-    )
-    scaled = data * value_scale
-    transform = from_origin(-11688500.0, 4866000.0, 500.0, 500.0)
-    with rasterio.open(
-        path,
-        "w",
-        driver="GTiff",
-        height=scaled.shape[0],
-        width=scaled.shape[1],
-        count=1,
-        dtype="float32",
-        crs="EPSG:3857",
-        transform=transform,
-        nodata=-9999.0,
-    ) as dst:
-        dst.write(scaled, 1)
 
 
 def bootstrap_sample_data(data_root: Path) -> None:
-    """Build sample tables and rasters if they do not already exist."""
+    """Build the local sample catalog tables."""
     tables_dir = data_root / "tables"
-    cogs_dir = data_root / "cogs"
     tables_dir.mkdir(parents=True, exist_ok=True)
-    cogs_dir.mkdir(parents=True, exist_ok=True)
 
-    sediment_path = (cogs_dir / "sediment_yield_increase_example.tif").resolve()
-    turbidity_path = (cogs_dir / "turbidity_increase_example.tif").resolve()
-    sediment_sql_path = sediment_path.as_posix().replace("'", "''")
-    turbidity_sql_path = turbidity_path.as_posix().replace("'", "''")
-    _write_sample_raster(sediment_path, value_scale=1.0)
-    _write_sample_raster(turbidity_path, value_scale=0.35)
-
-    # Always (re)write the sample tables so the absolute `cog_uri` paths in raster_assets
-    # track the current checkout location. A stale early-return guard here would leave a
-    # previously generated parquet pointing at an old path, breaking local raster tiles.
     conn = duckdb.connect(database=":memory:")
     duckdb_home = (data_root / ".duckdb").resolve()
     duckdb_home.mkdir(parents=True, exist_ok=True)
@@ -192,53 +151,6 @@ def bootstrap_sample_data(data_root: Path) -> None:
         """
     )
     conn.execute(
-        f"""
-        CREATE TABLE raster_assets AS
-        SELECT * FROM (
-            VALUES
-                (
-                    'denver-water',
-                    'hayman-2002',
-                    'sediment_yield_increase',
-                    '{sediment_sql_path}',
-                    'tonnes/km^2/yr',
-                    'ylorbr',
-                    0.0,
-                    100.0,
-                    -9999.0,
-                    DATE '2026-01-01'
-                ),
-                (
-                    'denver-water',
-                    'hayman-2002',
-                    'turbidity_increase',
-                    '{turbidity_sql_path}',
-                    'NTU',
-                    'ylorbr',
-                    0.0,
-                    50.0,
-                    -9999.0,
-                    DATE '2026-01-01'
-                ),
-                (
-                    'foothills-utility',
-                    'camp-2018',
-                    'sediment_yield_increase',
-                    '{sediment_sql_path}',
-                    'tonnes/km^2/yr',
-                    'ylorbr',
-                    0.0,
-                    100.0,
-                    -9999.0,
-                    DATE '2026-01-01'
-                )
-        ) AS t(
-            utility_id, wildfire_id, metric_key, cog_uri, units, colormap_name,
-            rescale_min, rescale_max, nodata, as_of_date
-        )
-        """
-    )
-    conn.execute(
         """
         CREATE TABLE utility_sources AS
         SELECT * FROM (
@@ -303,7 +215,6 @@ def bootstrap_sample_data(data_root: Path) -> None:
         "pair_summary",
         "scalar_metrics",
         "case_study_costs",
-        "raster_assets",
         "utility_sources",
         "source_fire_locations",
     ]:

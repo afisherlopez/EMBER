@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy EMBER to Google Cloud Run as two services (tiler + app) from one image.
+# Deploy EMBER's burn-severity tiler to Google Cloud Run.
 #
 # Prereqs (one-time):
 #   - gcloud CLI installed and authenticated:   gcloud auth login
@@ -9,38 +9,36 @@
 #   - An Artifact Registry Docker repo (default name "ember"):
 #       gcloud artifacts repositories create ember \
 #         --repository-format=docker --location="$REGION"
-#   - A GCS bucket with tables/ and cogs/, and a service account that can read it,
-#     granted to both Cloud Run services (see SERVICE_ACCOUNT below).
+#   - A GCS bucket containing the published burn-severity COGs and manifest.
+#   - A Cloud Run service account with Storage Object Viewer on that data.
 #
 # Usage:
-#   PROJECT_ID=my-proj GCS_BUCKET=my-bucket \
+#   PROJECT_ID=my-proj GCS_BUCKET=my-bucket STREAMLIT_ORIGIN=https://example.streamlit.app \
 #   SERVICE_ACCOUNT=ember-sa@my-proj.iam.gserviceaccount.com \
 #   ./scripts/deploy_cloudrun.sh
 #
-# Optional overrides: REGION, REPO, GCS_PREFIX, TILER_SERVICE, APP_SERVICE, IMAGE_TAG
+# Optional overrides: REGION, REPO, GCS_PREFIX, TILER_SERVICE, IMAGE_TAG
 set -euo pipefail
 
-# --- required config -------------------------------------------------------
-PROJECT_ID="${PROJECT_ID:?Set PROJECT_ID to your GCP project id}"
-GCS_BUCKET="${GCS_BUCKET:?Set GCS_BUCKET to the bucket holding tables/ and cogs/}"
-SERVICE_ACCOUNT="${SERVICE_ACCOUNT:?Set SERVICE_ACCOUNT to the runtime service-account email}"
+# Existing EMBER defaults can be overridden without editing this script.
+PROJECT_ID="${PROJECT_ID:-data-gcp-main}"
+GCS_BUCKET="${GCS_BUCKET:-data_main_gcs}"
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-ember-reader@data-gcp-main.iam.gserviceaccount.com}"
+: "${STREAMLIT_ORIGIN:?Set STREAMLIT_ORIGIN to the deployed app origin, such as https://ember-dashboard.streamlit.app}"
 
-# --- optional config -------------------------------------------------------
 REGION="${REGION:-us-central1}"
 REPO="${REPO:-ember}"
-GCS_PREFIX="${GCS_PREFIX:-}"
+GCS_PREFIX="${GCS_PREFIX:-EMBER}"
 TILER_SERVICE="${TILER_SERVICE:-ember-tiler}"
-APP_SERVICE="${APP_SERVICE:-ember-app}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/ember:${IMAGE_TAG}"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/ember-tiler:${IMAGE_TAG}"
 
 echo "==> Building image with Cloud Build: ${IMAGE}"
 gcloud builds submit --project "${PROJECT_ID}" --tag "${IMAGE}" .
 
-# --- 1) Tiler --------------------------------------------------------------
 # GOOGLE_APPLICATION_CREDENTIALS is intentionally left unset so the attached
-# service account is used via Application Default Credentials (per README).
+# service account is used via Application Default Credentials.
 echo "==> Deploying tiler service: ${TILER_SERVICE}"
 gcloud run deploy "${TILER_SERVICE}" \
   --project "${PROJECT_ID}" \
@@ -48,38 +46,14 @@ gcloud run deploy "${TILER_SERVICE}" \
   --image "${IMAGE}" \
   --service-account "${SERVICE_ACCOUNT}" \
   --allow-unauthenticated \
-  --set-env-vars "SERVICE=tiler,EMBER_STORAGE_BACKEND=gcs,GCS_BUCKET=${GCS_BUCKET},GCS_PREFIX=${GCS_PREFIX}"
+  --set-env-vars "EMBER_STORAGE_BACKEND=gcs,GCS_BUCKET=${GCS_BUCKET},GCS_PREFIX=${GCS_PREFIX},CORS_ORIGINS=${STREAMLIT_ORIGIN}"
 
 TILER_URL="$(gcloud run services describe "${TILER_SERVICE}" \
   --project "${PROJECT_ID}" --region "${REGION}" \
   --format='value(status.url)')"
 echo "==> Tiler URL: ${TILER_URL}"
 
-# --- 2) App ----------------------------------------------------------------
-echo "==> Deploying app service: ${APP_SERVICE}"
-gcloud run deploy "${APP_SERVICE}" \
-  --project "${PROJECT_ID}" \
-  --region "${REGION}" \
-  --image "${IMAGE}" \
-  --service-account "${SERVICE_ACCOUNT}" \
-  --allow-unauthenticated \
-  --set-env-vars "SERVICE=app,EMBER_STORAGE_BACKEND=gcs,GCS_BUCKET=${GCS_BUCKET},GCS_PREFIX=${GCS_PREFIX},TILER_URL=${TILER_URL}"
-
-APP_URL="$(gcloud run services describe "${APP_SERVICE}" \
-  --project "${PROJECT_ID}" --region "${REGION}" \
-  --format='value(status.url)')"
-echo "==> App URL: ${APP_URL}"
-
-# --- 3) Wire CORS ----------------------------------------------------------
-# The browser loads tiles from the tiler using the app's origin, so the tiler
-# must allow the app URL. This is done after the app URL is known.
-echo "==> Updating tiler CORS_ORIGINS to allow ${APP_URL}"
-gcloud run services update "${TILER_SERVICE}" \
-  --project "${PROJECT_ID}" \
-  --region "${REGION}" \
-  --update-env-vars "CORS_ORIGINS=${APP_URL}"
-
 echo ""
-echo "Deploy complete."
-echo "  App:   ${APP_URL}"
-echo "  Tiler: ${TILER_URL}"
+echo "Tiler deploy complete: ${TILER_URL}"
+echo "Set TILER_URL=${TILER_URL} in Streamlit Community Cloud secrets."
+echo "Any existing ember-app Cloud Run service is unchanged."

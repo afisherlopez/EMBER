@@ -40,12 +40,15 @@ class Settings(BaseSettings):
         default="",
         description=(
             "Service-account JSON path used by every GCS reader (the storage client and "
-            "GDAL/TiTiler). Leave blank on managed runtimes "
+            "GDAL/rio-tiler). Leave blank on managed runtimes "
             "(e.g. Cloud Run) to use the attached service account via ADC."
         ),
     )
 
-    tiler_url: str = Field(default="http://localhost:8000", description="Base URL for TiTiler service.")
+    tiler_url: str = Field(
+        default="http://localhost:8000",
+        description="Base URL for the EMBER burn-severity tile service.",
+    )
     # Stored as a plain comma-separated string so pydantic-settings does not attempt to
     # JSON-decode the env value; use `cors_origin_list` for the parsed origins.
     cors_origins: str = Field(

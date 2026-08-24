@@ -196,21 +196,6 @@ def write_tables(conn: duckdb.DuckDBPyConnection, tables_dir: Path) -> None:
         ) TO '{(tables_dir / "scalar_metrics.parquet").as_posix()}' (FORMAT PARQUET)
         """
     )
-    conn.execute(
-        f"""
-        COPY (
-            SELECT
-                CAST(NULL AS VARCHAR) AS utility_id, CAST(NULL AS VARCHAR) AS wildfire_id,
-                CAST(NULL AS VARCHAR) AS metric_key, CAST(NULL AS VARCHAR) AS cog_uri,
-                CAST(NULL AS VARCHAR) AS units, CAST(NULL AS VARCHAR) AS colormap_name,
-                CAST(NULL AS DOUBLE) AS rescale_min, CAST(NULL AS DOUBLE) AS rescale_max,
-                CAST(NULL AS DOUBLE) AS nodata, CAST(NULL AS DATE) AS as_of_date
-            WHERE FALSE
-        ) TO '{(tables_dir / "raster_assets.parquet").as_posix()}' (FORMAT PARQUET)
-        """
-    )
-
-
 def ingest(doh_gdb: str, data_root: Path, fires_shp: str | None = None) -> None:
     """Run the Washington ingest from DOH/MTBS sources to EMBER Parquet tables."""
     conn = _connect()

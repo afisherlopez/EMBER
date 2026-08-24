@@ -200,55 +200,6 @@ def upsert_pair_summary(
     )
 
 
-def upsert_raster_asset(
-    *,
-    utility_id: str,
-    wildfire_id: str,
-    metric_key: str,
-    cog_uri: str,
-    units: str | None,
-    colormap_name: str | None,
-    rescale_min: float | None,
-    rescale_max: float | None,
-    nodata: float | None,
-    as_of_date: date | None,
-) -> AdminWriteResult:
-    """Add or replace one raster asset row."""
-    return _rewrite_table(
-        "raster_assets",
-        [
-            (
-                """
-                DELETE FROM edited
-                WHERE utility_id = ? AND wildfire_id = ? AND metric_key = ?
-                """,
-                [utility_id, wildfire_id, metric_key],
-            ),
-            (
-                """
-                INSERT INTO edited (
-                    utility_id, wildfire_id, metric_key, cog_uri, units, colormap_name,
-                    rescale_min, rescale_max, nodata, as_of_date
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    utility_id,
-                    wildfire_id,
-                    metric_key,
-                    cog_uri,
-                    units,
-                    colormap_name,
-                    rescale_min,
-                    rescale_max,
-                    nodata,
-                    as_of_date,
-                ],
-            ),
-        ],
-    )
-
-
 def replace_case_study_costs(
     *,
     utility_id: str,

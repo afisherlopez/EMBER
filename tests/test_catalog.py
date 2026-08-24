@@ -61,6 +61,9 @@ def test_yearly_intersected_area_sums_source_and_service_overlaps(
         (2002, 580.2),
         (2018, 210.1),
     ]
+    assert catalog.list_yearly_intersected_area("CO") == [(2002, 580.2)]
+    assert catalog.list_yearly_intersected_area("CA") == [(2018, 210.1)]
+    assert catalog.list_yearly_intersected_area("WA") == []
 
 
 def test_yearly_burned_area_converts_acres_to_square_kilometers(
@@ -86,14 +89,10 @@ def test_case_study_cost_rows_are_scoped_to_utility(tmp_path: Path) -> None:
     assert catalog.list_case_study_costs("foothills-utility") == []
 
 
-def test_raster_and_geojson_lookup(tmp_path: Path) -> None:
-    """Fixture should expose raster URI and simplified GeoJSON feature."""
+def test_geojson_lookup(tmp_path: Path) -> None:
+    """Fixture should expose a simplified GeoJSON feature."""
     catalog = _catalog_with_fixture(tmp_path)
-    asset = catalog.get_raster_asset("denver-water", "hayman-2002", "sediment_yield_increase")
     geojson = catalog.get_geojson("utilities", "denver-water", simplify_tolerance=0.0005)
-    assert asset is not None
-    assert asset.cog_uri.endswith(".tif")
-    assert Path(asset.cog_uri).is_absolute()
     assert geojson["type"] == "Feature"
 
 

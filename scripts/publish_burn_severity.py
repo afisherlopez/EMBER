@@ -1,7 +1,7 @@
 """Convert annual MTBS CONUS raster archives to COGs and publish a manifest.
 
 The source uploads are LZW-compressed, striped GeoTIFFs inside one ZIP per year.
-They are converted to tiled Cloud-Optimized GeoTIFFs so TiTiler can answer map
+They are converted to tiled Cloud-Optimized GeoTIFFs so the tile service can answer map
 tile requests with efficient GCS range reads.
 """
 

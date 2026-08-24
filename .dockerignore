@@ -1,5 +1,5 @@
 # Keep the build context (and Cloud Build uploads) small and free of secrets.
-# Only runtime code, config, documentation, and the logo are copied by the Dockerfile.
+# Only the burn-severity tiler runtime is copied by the Dockerfile.
 
 # Version control
 .git

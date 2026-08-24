@@ -8,7 +8,7 @@ On Streamlit Community Cloud there is no ADC and no ``.env``. There, an operator
 read-only service-account key (and optional config) into the app's **Secrets**. This module
 materializes that key to a temp file and points every GCS reader at it through
 ``GOOGLE_APPLICATION_CREDENTIALS`` — the single credential DuckDB (via gcsfs),
-google-cloud-storage, and GDAL/TiTiler all understand.
+google-cloud-storage, and GDAL/rio-tiler all understand.
 
 ``bootstrap_gcp_credentials()`` must run **before** ``core.settings`` is imported so pydantic
 picks up any env vars injected here.
@@ -31,8 +31,10 @@ _CONFIG_KEYS = (
     "TILER_URL",
     "CORS_ORIGINS",
     "GEOJSON_SIMPLIFY_TOLERANCE",
+    "EMBER_WILDFIRE_STATES",
+    "EMBER_ADMIN_PASSWORD",
 )
-# TOML table holding the service-account JSON fields (see DEPLOY.md).
+# TOML table holding the service-account JSON fields (see docs/deployment.md).
 _SERVICE_ACCOUNT_KEY = "gcp_service_account"
 
 

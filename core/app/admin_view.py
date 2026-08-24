@@ -11,7 +11,6 @@ from core.admin_data import (
     AdminWriteResult,
     replace_case_study_costs,
     upsert_pair_summary,
-    upsert_raster_asset,
     upsert_scalar_metric,
     upsert_utility_scalar_metric,
 )
@@ -172,54 +171,6 @@ def _render_pair_summary_form(utilities: list[Utility], wildfires: list[Wildfire
         _show_write_result(result)
 
 
-def _render_raster_asset_form(
-    utilities: list[Utility],
-    wildfires: list[Wildfire],
-    metrics: dict[str, MetricDefinition],
-) -> None:
-    st.subheader("Raster Asset")
-    st.caption("Add or replace a row in `raster_assets.parquet`.")
-    utility_labels = _utility_options(utilities)
-    wildfire_labels = _wildfire_options(wildfires)
-    metric_labels = _metric_options(metrics, "raster")
-
-    if not metric_labels:
-        st.info("No raster metrics are configured.")
-        return
-
-    with st.form("admin_raster_asset"):
-        utility, wildfire = _selected_pair(utility_labels, wildfire_labels)
-        metric_label = st.selectbox("Metric", list(metric_labels.keys()))
-        metric = metric_labels[metric_label]
-        cog_uri = st.text_input("COG URI")
-        units = st.text_input("Units", value=metric.unit or "")
-        colormap_name = st.text_input("Colormap", value=metric.default_colormap or "")
-        default_rescale = metric.default_rescale or (0.0, 1.0)
-        rescale_min = st.number_input("Rescale min", value=float(default_rescale[0]), format="%.6f")
-        rescale_max = st.number_input("Rescale max", value=float(default_rescale[1]), format="%.6f")
-        nodata = st.number_input("NoData value", value=-9999.0, format="%.6f")
-        as_of_date = st.date_input("As-of date", value=date.today(), key="raster_as_of_date")
-        submitted = st.form_submit_button("Save raster asset")
-
-    if submitted:
-        if not cog_uri:
-            st.error("COG URI is required.")
-            return
-        result = upsert_raster_asset(
-            utility_id=utility.utility_id,
-            wildfire_id=wildfire.wildfire_id,
-            metric_key=metric.key,
-            cog_uri=cog_uri,
-            units=units or None,
-            colormap_name=colormap_name or None,
-            rescale_min=float(rescale_min),
-            rescale_max=float(rescale_max),
-            nodata=float(nodata),
-            as_of_date=as_of_date,
-        )
-        _show_write_result(result)
-
-
 def _render_case_study_cost_form(
     utilities: list[Utility],
     case_studies: list[CaseStudy],
@@ -284,8 +235,8 @@ def render_admin_view(catalog: Catalog, metrics: dict[str, MetricDefinition]) ->
     utilities = catalog.list_utilities()
     wildfires = catalog.list_wildfires()
     case_studies = catalog.list_case_studies()
-    scalar_tab, costs_tab, pair_tab, raster_tab = st.tabs(
-        ["Scalar metrics", "Case study costs", "Pair summaries", "Raster assets"]
+    scalar_tab, costs_tab, pair_tab = st.tabs(
+        ["Scalar metrics", "Case study costs", "Pair summaries"]
     )
     with scalar_tab:
         _render_scalar_metric_form(utilities, wildfires, metrics)
@@ -293,5 +244,3 @@ def render_admin_view(catalog: Catalog, metrics: dict[str, MetricDefinition]) ->
         _render_case_study_cost_form(utilities, case_studies)
     with pair_tab:
         _render_pair_summary_form(utilities, wildfires)
-    with raster_tab:
-        _render_raster_asset_form(utilities, wildfires, metrics)

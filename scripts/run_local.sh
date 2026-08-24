@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run EMBER locally with a single command: starts the TiTiler tiler and the Streamlit
+# Run EMBER locally with a single command: starts the burn-severity tiler and Streamlit
 # app together, wired to each other, and shuts the tiler down when you stop the app.
 #
 # Usage:
@@ -21,8 +21,7 @@ cd "$(dirname "$0")/.."
 APP_PORT="${APP_PORT:-8501}"
 TILER_PORT="${TILER_PORT:-8000}"
 
-# Ensure the local sample dataset exists (no-op download; regenerates the small tables so
-# their cog_uri paths match this checkout). Harmless when running against GCS.
+# Ensure the local sample catalog tables exist. Harmless when running against GCS.
 python scripts/bootstrap_sample_data.py
 
 # Start the tiler in the background and make sure it is torn down on exit.
