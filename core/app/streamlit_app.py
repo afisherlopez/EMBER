@@ -89,7 +89,7 @@ _LOADING_FACTS = (
     "Did you know: Wildfires caused $380 million in damages to Oregon water "
     "systems in 2020 alone. (Source: US Forest Service)",
     "Did you know: During peak fire years, post-fire sediment loads can reach "
-    "between 19 and 286 pre-fire levels. (Source: Brucker et al, Nature Communications)",
+    "between 19 and 286 times pre-fire sediment levels. (Source: Brucker et al, Nature Communications)",
 )
 
 
