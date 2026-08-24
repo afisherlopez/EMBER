@@ -37,11 +37,27 @@ from core.gcp_auth import bootstrap_gcp_credentials
 
 bootstrap_gcp_credentials()
 
-from core.app.admin_view import admin_password_is_configured, admin_password_matches, render_admin_view
-from core.app.case_study_view import render_case_study_view
-from core.app.economic_impact import render_economic_impact_data
-from core.app.fire_view import render_fire_view
-from core.app.general_insights import render_general_insights
+
+def _drop_stale_app_modules() -> None:
+    """Reload dashboard modules after a Cloud git pull that did not restart the process.
+
+    Streamlit Community Cloud often re-executes this file while leaving previously
+    imported `core.app.*` modules in `sys.modules`. The new script then fails with
+    `cannot import name 'OVERVIEW_CENTER'` because the in-memory `map_view` is still
+    the pre-pull version.
+    """
+    map_mod = sys.modules.get("core.app.map_view")
+    if map_mod is None:
+        return
+    if hasattr(map_mod, "OVERVIEW_CENTER") and hasattr(map_mod, "SharedMapSlot"):
+        return
+    for name in list(sys.modules):
+        if name == "core.app" or name.startswith("core.app."):
+            del sys.modules[name]
+
+
+_drop_stale_app_modules()
+
 from core.app.map_view import (
     OVERVIEW_CENTER,
     OVERVIEW_ZOOM,
@@ -51,6 +67,11 @@ from core.app.map_view import (
     build_utility_case_study_groups,
     map_viewport,
 )
+from core.app.admin_view import admin_password_is_configured, admin_password_matches, render_admin_view
+from core.app.case_study_view import render_case_study_view
+from core.app.economic_impact import render_economic_impact_data
+from core.app.fire_view import render_fire_view
+from core.app.general_insights import render_general_insights
 from core.app.selector_controls import render_case_study_selector
 from core.burn_severity import load_burn_severity_assets
 from core.catalog import Catalog
