@@ -12,9 +12,8 @@ matplotlib.use("Agg")  # Headless backend; Streamlit renders the figure via st.p
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import streamlit as st  # noqa: E402
-from streamlit_folium import st_folium  # noqa: E402
 
-from core.app.map_view import add_burn_severity_layer  # noqa: E402
+from core.app.map_view import SharedMapSlot, ViewSlots, map_viewport  # noqa: E402
 from core.app.utility_sources import render_utility_sources  # noqa: E402
 from core.catalog import Catalog  # noqa: E402
 from core.models import IntersectingWildfire, Utility, UtilitySource  # noqa: E402
@@ -112,30 +111,20 @@ def _render_overlap_chart(
     plt.close(fig)
 
 
-def _render_map(
+def _build_map_groups(
     utility: Utility,
     source_area_geojson: dict | None,
     service_area_geojson: dict | None,
     sources: list[UtilitySource],
     fires: list[IntersectingWildfire],
-    burn_severity_years: list[int],
-) -> None:
-    fmap = folium.Map(
-        location=[utility.centroid_lat, utility.centroid_lon], zoom_start=9, control_scale=True
-    )
+) -> tuple[list[folium.FeatureGroup], list[tuple[float, float]]]:
+    feature_groups: list[folium.FeatureGroup] = []
     bounds_points: list[tuple[float, float]] = []
 
-    add_burn_severity_layer(
-        fmap,
-        burn_severity_years,
-        show=False,
-        year_control=False,
-    )
-
     if service_area_geojson is not None:
+        service_group = folium.FeatureGroup(name=f"{utility.name} service area")
         folium.GeoJson(
             service_area_geojson,
-            name=f"{utility.name} service area",
             marker=folium.CircleMarker(
                 radius=7,
                 color="#2ca02c",
@@ -145,14 +134,18 @@ def _render_map(
                 fill_opacity=0.9,
             ),
             style_function=_service_area_style,
-        ).add_to(fmap)
+        ).add_to(service_group)
+        feature_groups.append(service_group)
         _collect_points(service_area_geojson["geometry"], bounds_points)
     if source_area_geojson is not None:
+        source_area_group = folium.FeatureGroup(
+            name=f"{utility.name} source water area"
+        )
         folium.GeoJson(
             source_area_geojson,
-            name=f"{utility.name} source water area",
             style_function=_source_area_style,
-        ).add_to(fmap)
+        ).add_to(source_area_group)
+        feature_groups.append(source_area_group)
         _collect_points(source_area_geojson["geometry"], bounds_points)
     mapped_sources = [
         source
@@ -175,7 +168,7 @@ def _render_map(
                 tooltip=f"{source.source_name} — {source.source_type}",
             ).add_to(source_group)
             bounds_points.append((source.latitude, source.longitude))
-        source_group.add_to(fmap)
+        feature_groups.append(source_group)
 
     shown = fires[:MAX_PERIMETERS_ON_MAP]
     fire_group = folium.FeatureGroup(name=f"Intersecting wildfires ({len(shown)})")
@@ -193,63 +186,68 @@ def _render_map(
             tooltip=tooltip,
         ).add_to(fire_group)
         _collect_points(geometry, bounds_points)
-    fire_group.add_to(fmap)
-    folium.LayerControl(collapsed=False).add_to(fmap)
+    feature_groups.append(fire_group)
 
-    if bounds_points:
-        lats = [p[0] for p in bounds_points]
-        lons = [p[1] for p in bounds_points]
-        fmap.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
-
-    st_folium(fmap, width=750, height=560, returned_objects=[])
+    return feature_groups, bounds_points
 
 
 def render_case_study_view(
     catalog: Catalog,
     utilities: list[Utility],
-    render_overview: Callable[[], None],
-    available_burn_severity_years: set[int],
+    slots: ViewSlots,
+    shared_map: SharedMapSlot,
+    show_overview: Callable[[], None],
 ) -> None:
     """Render the 'select a utility + year range -> intersecting wildfires' view."""
-    st.subheader("Wildfires intersecting a utility's source or service area")
+    with slots.controls:
+        st.subheader("Wildfires intersecting a utility's source or service area")
 
-    utility_states = sorted({u.state for u in utilities})
-    state_col, control_col, year_col = st.columns([1, 2, 3])
-    with state_col:
-        utility_state_filter = st.selectbox("Utility state filter", ["All"] + utility_states, index=0)
-
-    filtered_utilities = utilities
-    if utility_state_filter != "All":
-        filtered_utilities = [u for u in utilities if u.state == utility_state_filter]
-
-    utility_map = {f"{u.name} ({u.state})": u.utility_id for u in filtered_utilities}
-    with control_col:
-        utility_label = st.selectbox(
-            "Water utility", options=list(utility_map.keys()), index=None, placeholder="Select utility"
-        )
-    utility_id = utility_map.get(utility_label) if utility_label else None
-
-    bounds = catalog.wildfire_year_bounds()
-    if bounds is None:
-        st.info("No wildfire data is available.")
-        return
-    min_year, max_year = bounds
-    with year_col:
-        if min_year == max_year:
-            year_range = (min_year, max_year)
-            st.caption(f"Only year {min_year} is available in the data.")
-        else:
-            year_range = st.slider(
-                "Ignition year range",
-                min_value=min_year,
-                max_value=max_year,
-                value=(max(min_year, max_year - 25), max_year),
-                format="%d",
+        utility_states = sorted({u.state for u in utilities})
+        state_col, control_col, year_col = st.columns([1, 2, 3])
+        with state_col:
+            utility_state_filter = st.selectbox(
+                "Utility state filter", ["All"] + utility_states, index=0
             )
 
+        filtered_utilities = utilities
+        if utility_state_filter != "All":
+            filtered_utilities = [u for u in utilities if u.state == utility_state_filter]
+
+        utility_map = {f"{u.name} ({u.state})": u.utility_id for u in filtered_utilities}
+        with control_col:
+            utility_label = st.selectbox(
+                "Water utility",
+                options=list(utility_map.keys()),
+                index=None,
+                placeholder="Select utility",
+            )
+        utility_id = utility_map.get(utility_label) if utility_label else None
+
+        bounds = catalog.wildfire_year_bounds()
+        if bounds is None:
+            st.info("No wildfire data is available.")
+            return
+        min_year, max_year = bounds
+        with year_col:
+            if min_year == max_year:
+                year_range = (min_year, max_year)
+                st.caption(f"Only year {min_year} is available in the data.")
+            else:
+                year_range = st.slider(
+                    "Ignition year range",
+                    min_value=min_year,
+                    max_value=max_year,
+                    value=(max(min_year, max_year - 25), max_year),
+                    format="%d",
+                )
+
     if not utility_id:
-        render_overview()
-        st.info("Select a water utility to see the wildfires that intersected its source area.")
+        show_overview()
+        with slots.panel:
+            st.info(
+                "Select a water utility to see the wildfires that intersected "
+                "its source area."
+            )
         return
 
     utility = next(u for u in filtered_utilities if u.utility_id == utility_id)
@@ -258,26 +256,33 @@ def render_case_study_view(
     service_area_geojson = catalog.get_utility_geojson(utility_id, "service")
     sources = catalog.list_utility_sources(utility_id)
 
-    severity_years = sorted(
-        {
-            fire.ignition_year
-            for fire in fires
-            if fire.ignition_year in available_burn_severity_years
-        },
-        reverse=True,
-    )
-    map_col, panel_col = st.columns([3, 2], gap="large")
-    with map_col:
-        _render_map(
+    overlay_id = f"utility:{utility_id}:{year_range[0]}:{year_range[1]}"
+    cached_viewport = shared_map.overlay_viewport(overlay_id)
+    if cached_viewport is not None:
+        center, zoom = cached_viewport
+        feature_groups = []
+    else:
+        feature_groups, bounds_points = _build_map_groups(
             utility,
             source_area_geojson,
             service_area_geojson,
             sources,
             fires,
-            severity_years,
         )
+        center, zoom = map_viewport(
+            bounds_points,
+            default_center=(utility.centroid_lat, utility.centroid_lon),
+            default_zoom=9,
+        )
+    shared_map.show(
+        feature_groups,
+        overlay_id=overlay_id,
+        center=center,
+        zoom=zoom,
+        height=560,
+    )
 
-    with panel_col:
+    with slots.panel:
         if sources:
             render_utility_sources(sources, compact=True)
         st.subheader("Intersecting wildfires")

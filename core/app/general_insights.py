@@ -7,6 +7,14 @@ import streamlit as st
 from core.catalog import Catalog
 
 ACRES_PER_SQUARE_KILOMETER = 247.105381467165
+_INSIGHTS_CACHE_KEY = "_ember_insights_cache"
+
+
+def _memo(key: str, loader):
+    store = st.session_state.setdefault(_INSIGHTS_CACHE_KEY, {})
+    if key not in store:
+        store[key] = loader()
+    return store[key]
 
 
 def _render_area_chart(
@@ -143,7 +151,7 @@ def _render_area_chart(
 
 def render_general_insights(catalog: Catalog) -> None:
     """Render aggregate wildfire and utility-intersection trends."""
-    year_bounds = catalog.wildfire_year_bounds()
+    year_bounds = _memo("year_bounds", catalog.wildfire_year_bounds)
     if year_bounds is None:
         st.info("No wildfire data is available.")
         return
@@ -151,7 +159,7 @@ def render_general_insights(catalog: Catalog) -> None:
 
     burned_totals = {
         year: area_km2 * ACRES_PER_SQUARE_KILOMETER
-        for year, area_km2 in catalog.list_yearly_burned_area()
+        for year, area_km2 in _memo("burned", catalog.list_yearly_burned_area)
     }
     _render_area_chart(
         title="Burned area over time",
@@ -166,7 +174,9 @@ def render_general_insights(catalog: Catalog) -> None:
     st.divider()
     intersected_totals = {
         year: area_km2 * ACRES_PER_SQUARE_KILOMETER
-        for year, area_km2 in catalog.list_yearly_intersected_area()
+        for year, area_km2 in _memo(
+            "intersected", catalog.list_yearly_intersected_area
+        )
     }
     if intersected_totals:
         _render_area_chart(
@@ -198,7 +208,10 @@ def render_general_insights(catalog: Catalog) -> None:
     for column, title, state in state_charts:
         state_totals = {
             year: area_km2 * ACRES_PER_SQUARE_KILOMETER
-            for year, area_km2 in catalog.list_yearly_intersected_area(state)
+            for year, area_km2 in _memo(
+                f"intersected:{state}",
+                lambda state=state: catalog.list_yearly_intersected_area(state),
+            )
         }
         with column:
             if state_totals:
