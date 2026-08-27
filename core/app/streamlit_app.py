@@ -421,6 +421,8 @@ def _render_dashboard() -> None:
         catalog = cached_catalog(CATALOG_CACHE_VERSION)
         if st.button("Exit admin mode"):
             st.session_state["admin_mode"] = False
+            st.session_state.pop("admin_last_write", None)
+            st.session_state.pop("admin_last_write_detail", None)
             st.rerun()
         render_admin_view(catalog, metrics_registry)
         return

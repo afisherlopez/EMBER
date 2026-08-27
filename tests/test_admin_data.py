@@ -6,7 +6,12 @@ from pathlib import Path
 import duckdb
 
 from core import admin_data
-from core.admin_data import replace_case_study_costs, upsert_utility_scalar_metric
+from core.admin_data import (
+    replace_case_study_costs,
+    upsert_case_study_point_utility,
+    upsert_utility_scalar_metric,
+    utility_id_from_name,
+)
 from core.case_study_costs import parse_case_study_csv
 from core.catalog import Catalog
 from core.settings import settings
@@ -86,3 +91,65 @@ def test_admin_can_update_pre_fire_operating_revenue(
     )
     assert metric is not None
     assert metric.value == 150_000_000
+
+
+def test_admin_can_map_a_case_study_utility_by_coordinates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bootstrap_sample_data(tmp_path)
+    csv_path = (
+        Path(__file__).resolve().parents[1]
+        / "EMBER Case-Study Datasheet - EWEB_W_Costs.csv"
+    )
+    uploaded_rows = parse_case_study_csv(csv_path.read_bytes())[:1]
+    monkeypatch.setattr(settings, "ember_storage_backend", "local")
+    monkeypatch.setattr(admin_data, "_local_path", lambda key: tmp_path / key)
+
+    utility_id, _ = upsert_case_study_point_utility(
+        name="Eugene Water & Electric Board",
+        state="OR",
+        latitude=44.0521,
+        longitude=-123.0868,
+    )
+    replace_case_study_costs(utility_id=utility_id, rows=uploaded_rows)
+
+    catalog = Catalog(LocalStorage(tmp_path))
+    case_studies = catalog.list_case_studies()
+    point = catalog.get_utility_geojson(utility_id, "service")
+    mapped = next(utility for utility in catalog.list_utilities() if utility.utility_id == utility_id)
+
+    assert utility_id == "eugene-water-electric-board"
+    assert any(case_study.utility_id == utility_id for case_study in case_studies)
+    assert mapped.centroid_lat == 44.0521
+    assert mapped.centroid_lon == -123.0868
+    assert mapped.has_source_area is False
+    assert mapped.has_service_area is True
+    assert point is not None
+    assert point["geometry"]["type"] == "Point"
+    assert point["geometry"]["coordinates"] == [-123.0868, 44.0521]
+
+
+def test_coordinate_mapping_refuses_to_overwrite_catalog_geometry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bootstrap_sample_data(tmp_path)
+    monkeypatch.setattr(settings, "ember_storage_backend", "local")
+    monkeypatch.setattr(admin_data, "_local_path", lambda key: tmp_path / key)
+
+    try:
+        upsert_case_study_point_utility(
+            name="Denver Water",
+            state="CO",
+            latitude=39.7,
+            longitude=-105.0,
+        )
+    except ValueError as exc:
+        assert "already in the catalog" in str(exc)
+    else:
+        raise AssertionError("Expected mapped catalog utilities to be rejected")
+
+
+def test_utility_id_from_name_slugifies_names() -> None:
+    assert utility_id_from_name("Eugene Water & Electric Board") == (
+        "eugene-water-electric-board"
+    )

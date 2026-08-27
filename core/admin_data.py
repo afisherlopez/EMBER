@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -92,6 +94,117 @@ def _backup_and_publish(table: str, updated_file: Path) -> AdminWriteResult:
         table_uri=table_path.as_posix(),
         backup_uri=backup_uri,
     )
+
+
+def utility_id_from_name(name: str) -> str:
+    """Build a stable catalog id from a case-study utility name."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+    return slug or "case-study-utility"
+
+
+def upsert_case_study_point_utility(
+    *,
+    name: str,
+    state: str,
+    latitude: float,
+    longitude: float,
+    utility_id: str | None = None,
+) -> tuple[str, AdminWriteResult]:
+    """Add or update a case-study utility as a map point instead of catalog geometry."""
+    if not -90.0 <= latitude <= 90.0:
+        raise ValueError("Latitude must be between -90 and 90.")
+    if not -180.0 <= longitude <= 180.0:
+        raise ValueError("Longitude must be between -180 and 180.")
+
+    resolved_id = utility_id or utility_id_from_name(name)
+    point_geojson = json.dumps(
+        {"type": "Point", "coordinates": [longitude, latitude]}
+    )
+    with tempfile.TemporaryDirectory(prefix="ember_admin_utilities_") as tmp:
+        tmp_dir = Path(tmp)
+        source = _read_table_to_temp("utilities", tmp_dir)
+        output = tmp_dir / "utilities.updated.parquet"
+        conn = duckdb.connect(database=":memory:")
+        conn.execute(
+            f"CREATE TABLE edited AS SELECT * FROM read_parquet('{source.as_posix()}')"
+        )
+        columns = {
+            row[0] for row in conn.execute("DESCRIBE edited").fetchall()
+        }
+        if "service_area_geojson" not in columns:
+            conn.execute("ALTER TABLE edited ADD COLUMN service_area_geojson VARCHAR")
+            columns.add("service_area_geojson")
+        for column in ("centroid_lat", "centroid_lon"):
+            if column in columns:
+                conn.execute(f"ALTER TABLE edited ALTER COLUMN {column} TYPE DOUBLE")
+
+        existing = conn.execute(
+            """
+            SELECT geometry_geojson
+            FROM edited
+            WHERE utility_id = ?
+            """,
+            [resolved_id],
+        ).fetchone()
+        if existing and existing[0]:
+            raise ValueError(
+                f"Utility `{resolved_id}` is already in the catalog with mapped "
+                "source-water geometry. Choose it from the dropdown instead of "
+                "entering coordinates."
+            )
+
+        if existing is not None:
+            assignments: list[str] = []
+            params: list[Any] = []
+            for column, value in (
+                ("name", name),
+                ("state", state),
+                ("centroid_lon", longitude),
+                ("centroid_lat", latitude),
+                ("service_area_geojson", point_geojson),
+            ):
+                if column in columns:
+                    assignments.append(f"{column} = ?")
+                    params.append(value)
+            if "updated_at" in columns:
+                assignments.append("updated_at = now()")
+            params.append(resolved_id)
+            conn.execute(
+                f"UPDATE edited SET {', '.join(assignments)} WHERE utility_id = ?",
+                params,
+            )
+        else:
+            insert_columns: list[str] = []
+            placeholders: list[str] = []
+            params = []
+            for column, value in (
+                ("utility_id", resolved_id),
+                ("name", name),
+                ("state", state),
+                ("source_area_name", "Case-study location only"),
+                ("geometry_geojson", None),
+                ("service_area_geojson", point_geojson),
+                ("centroid_lon", longitude),
+                ("centroid_lat", latitude),
+            ):
+                if column not in columns:
+                    continue
+                insert_columns.append(column)
+                placeholders.append("?")
+                params.append(value)
+            if "updated_at" in columns:
+                insert_columns.append("updated_at")
+                placeholders.append("now()")
+            conn.execute(
+                f"""
+                INSERT INTO edited ({", ".join(insert_columns)})
+                VALUES ({", ".join(placeholders)})
+                """,
+                params,
+            )
+
+        conn.execute(f"COPY edited TO '{output.as_posix()}' (FORMAT PARQUET)")
+        return resolved_id, _backup_and_publish("utilities", output)
 
 
 def _rewrite_table(table: str, statements: list[tuple[str, list[Any]]]) -> AdminWriteResult:

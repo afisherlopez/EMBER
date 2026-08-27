@@ -10,6 +10,7 @@ import streamlit as st
 from core.admin_data import (
     AdminWriteResult,
     replace_case_study_costs,
+    upsert_case_study_point_utility,
     upsert_pair_summary,
     upsert_scalar_metric,
     upsert_utility_scalar_metric,
@@ -18,6 +19,61 @@ from core.case_study_costs import CaseStudyCSVError, parse_case_study_csv
 from core.catalog import Catalog
 from core.models import CaseStudy, MetricDefinition, Utility, Wildfire
 from core.settings import settings
+
+# Postal abbreviations for the 50 states plus DC; searchable in the admin selectbox.
+US_STATE_ABBREVIATIONS = (
+    "AL",
+    "AK",
+    "AZ",
+    "AR",
+    "CA",
+    "CO",
+    "CT",
+    "DC",
+    "DE",
+    "FL",
+    "GA",
+    "HI",
+    "ID",
+    "IL",
+    "IN",
+    "IA",
+    "KS",
+    "KY",
+    "LA",
+    "ME",
+    "MD",
+    "MA",
+    "MI",
+    "MN",
+    "MS",
+    "MO",
+    "MT",
+    "NE",
+    "NV",
+    "NH",
+    "NJ",
+    "NM",
+    "NY",
+    "NC",
+    "ND",
+    "OH",
+    "OK",
+    "OR",
+    "PA",
+    "RI",
+    "SC",
+    "SD",
+    "TN",
+    "TX",
+    "UT",
+    "VT",
+    "VA",
+    "WA",
+    "WV",
+    "WI",
+    "WY",
+)
 
 
 def _configured_password() -> str:
@@ -62,9 +118,31 @@ def _metric_options(
     }
 
 
-def _show_write_result(result: AdminWriteResult) -> None:
+def _exit_admin_mode() -> None:
+    st.session_state["admin_mode"] = False
+    st.session_state.pop("admin_last_write", None)
+    st.session_state.pop("admin_last_write_detail", None)
+
+
+def _show_write_result(result: AdminWriteResult, detail: str | None = None) -> None:
+    """Clear cached reads, then rerun so the return button is not tied to the form submit."""
     st.cache_data.clear()
     st.cache_resource.clear()
+    st.session_state["admin_last_write"] = result
+    if detail:
+        st.session_state["admin_last_write_detail"] = detail
+    else:
+        st.session_state.pop("admin_last_write_detail", None)
+    st.rerun()
+
+
+def _render_pending_write_result() -> None:
+    result = st.session_state.get("admin_last_write")
+    if result is None:
+        return
+    detail = st.session_state.get("admin_last_write_detail")
+    if detail:
+        st.success(detail)
     st.success(f"Updated `{result.table}`.")
     if result.backup_uri:
         st.caption(f"Backup: `{result.backup_uri}`")
@@ -72,9 +150,10 @@ def _show_write_result(result: AdminWriteResult) -> None:
         st.caption("Created a new table; there was no previous version to back up.")
     st.caption(f"Published table: `{result.table_uri}`")
     st.info("Cached Parquet reads were cleared. Return to the dashboard to reload the updated data.")
-    if st.button("Return to dashboard with updated data", key=f"return_after_{result.table}"):
-        st.session_state["admin_mode"] = False
+    if st.button("Return to dashboard with updated data", key="return_after_admin_write"):
+        _exit_admin_mode()
         st.rerun()
+    st.divider()
 
 
 def _selected_pair(
@@ -101,7 +180,10 @@ def _render_scalar_metric_form(
         key="admin_scalar_metric_selection",
     )
     metric = metric_labels[metric_label]
-    is_utility_metric = metric.key == "pre_fire_annual_operating_revenue"
+    is_utility_metric = metric.key in {
+        "pre_fire_annual_operating_revenue",
+        "total_econ_impact",
+    }
 
     with st.form("admin_scalar_metric"):
         utility_label = st.selectbox("Water utility", list(utility_labels.keys()))
@@ -188,17 +270,58 @@ def _render_case_study_cost_form(
     )
     utility_labels = _utility_options(utilities)
     existing_utility_ids = {case_study.utility_id for case_study in case_studies}
+    location_mode = st.radio(
+        "Utility location",
+        (
+            "Choose from the utilities listed in EMBER",
+            "Enter coordinates (utility not on file)",
+        ),
+        key="admin_case_study_location_mode",
+        help=(
+            "If the case-study utility is not in the dropdown, enter a name and "
+            "map coordinates. EMBER will place a point at that location."
+        ),
+    )
+    using_coordinates = location_mode.startswith("Enter coordinates")
 
     with st.form("admin_case_study_costs"):
-        utility_label = st.selectbox("Water utility", list(utility_labels))
-        utility = utility_labels[utility_label]
-        utility_id = utility.utility_id
-        if utility_id in existing_utility_ids:
-            st.write(
-                f"Replacing all existing case-study rows for **{utility.name}**."
+        custom_name = ""
+        custom_state = ""
+        latitude = 0.0
+        longitude = 0.0
+        if using_coordinates:
+            custom_name = st.text_input("Utility name")
+            custom_state = st.selectbox(
+                "State",
+                US_STATE_ABBREVIATIONS,
+                index=None,
+                placeholder="Select a state",
+            )
+            latitude = st.number_input(
+                "Latitude",
+                min_value=-90.0,
+                max_value=90.0,
+                value=None,
+                placeholder="e.g. 44.0521",
+                format="%.6f",
+            )
+            longitude = st.number_input(
+                "Longitude",
+                min_value=-180.0,
+                max_value=180.0,
+                value=None,
+                placeholder="e.g. -123.0868",
+                format="%.6f",
             )
         else:
-            st.write(f"Creating a case study for **{utility.name}**.")
+            utility_label = st.selectbox("Water utility", list(utility_labels))
+            utility = utility_labels[utility_label]
+            if utility.utility_id in existing_utility_ids:
+                st.write(
+                    f"Replacing all existing case-study rows for **{utility.name}**."
+                )
+            else:
+                st.write(f"Creating a case study for **{utility.name}**.")
         uploaded_file = st.file_uploader("Case-study CSV", type=["csv"])
         submitted = st.form_submit_button("Replace case-study cost data")
 
@@ -212,20 +335,59 @@ def _render_case_study_cost_form(
     except CaseStudyCSVError as exc:
         st.error(str(exc))
         return
+
+    if using_coordinates:
+        if not custom_name.strip():
+            st.error("Enter a utility name for the map point.")
+            return
+        if not custom_state:
+            st.error("Select a state.")
+            return
+        if latitude is None or longitude is None:
+            st.error("Enter both latitude and longitude.")
+            return
+        try:
+            utility_id, _location_result = upsert_case_study_point_utility(
+                name=custom_name.strip(),
+                state=custom_state,
+                latitude=float(latitude),
+                longitude=float(longitude),
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        st.caption(
+            f"Mapped `{utility_id}` to a point at {float(latitude):.5f}, "
+            f"{float(longitude):.5f}."
+        )
+        result = replace_case_study_costs(utility_id=utility_id, rows=rows)
+        _show_write_result(
+            result,
+            detail=(
+                f"Saved {len(rows)} uploaded row(s) for `{utility_id}` and placed a "
+                "point on the case-study map."
+            ),
+        )
+        return
+
+    utility_id = utility.utility_id
     result = replace_case_study_costs(
         utility_id=utility_id,
         rows=rows,
     )
-    st.success(
-        f"Replaced the existing data with {len(rows)} uploaded row(s) for "
-        f"`{utility_id}`."
+    _show_write_result(
+        result,
+        detail=(
+            f"Replaced the existing data with {len(rows)} uploaded row(s) for "
+            f"`{utility_id}`."
+        ),
     )
-    _show_write_result(result)
 
 
 def render_admin_view(catalog: Catalog, metrics: dict[str, MetricDefinition]) -> None:
     """Render the admin data editor."""
     st.subheader("Admin Data Editor")
+    _render_pending_write_result()
 
     st.warning(
         "These forms rewrite Parquet tables and create a timestamped backup first. "

@@ -23,7 +23,7 @@ CSV_COLUMNS = (
     "Degree of Causation",
     "Description and Notes",
 )
-YEAR_COLUMN_ALIASES = ("Years Incurred", "Year", "Start Year")
+YEAR_COLUMN_ALIASES = ("Years Incurred", "Year", "Start Year", "Fiscal Years Incurred")
 COST_COLUMN_ALIASES = (
     "Inflation-Adjusted Value",
     "Inflation-Adjusted Cost",
