@@ -2,10 +2,12 @@ metrics:
   total_econ_impact:
     display_name: "Total estimated economic impact on utility due to wildfire"
     kind: scalar
+    scope: utility
     unit: USD
     value_format: "${:,.0f}"
   pre_fire_annual_operating_revenue:
     display_name: "Pre-Fire Annual Operating Revenue"
     kind: scalar
+    scope: utility
     unit: USD
     value_format: "${:,.0f}"

@@ -187,5 +187,6 @@ class MetricDefinition:
     key: str
     display_name: str
     kind: Literal["scalar"]
+    scope: Literal["utility", "pair"] = "pair"
     unit: str | None = None
     value_format: str | None = None

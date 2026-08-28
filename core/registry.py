@@ -36,10 +36,14 @@ def load_metric_registry(path: Path) -> dict[str, MetricDefinition]:
         kind = row.get("kind")
         if kind != "scalar":
             raise RegistryValidationError(f"Metric `{key}` has invalid `kind`: {kind!r}.")
+        scope = row.get("scope", "pair")
+        if scope not in {"utility", "pair"}:
+            raise RegistryValidationError(f"Metric `{key}` has invalid `scope`: {scope!r}.")
         metrics[key] = MetricDefinition(
             key=key,
             display_name=str(row.get("display_name", key)),
             kind=kind,
+            scope=scope,
             unit=row.get("unit"),
             value_format=row.get("value_format"),
         )

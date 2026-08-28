@@ -42,17 +42,11 @@ def _drop_stale_app_modules() -> None:
     """Reload dashboard modules after a Cloud git pull that did not restart the process.
 
     Streamlit Community Cloud often re-executes this file while leaving previously
-    imported `core.app.*` modules in `sys.modules`. The new script then fails with
-    `cannot import name 'OVERVIEW_CENTER'` because the in-memory `map_view` is still
-    the pre-pull version.
+    imported `core.app.*` modules in `sys.modules`. That can mix a new entrypoint
+    with an old `admin_view` (for example a missing coordinate form) until reboot.
     """
-    map_mod = sys.modules.get("core.app.map_view")
-    if map_mod is None:
-        return
-    if hasattr(map_mod, "OVERVIEW_CENTER") and hasattr(map_mod, "SharedMapSlot"):
-        return
     for name in list(sys.modules):
-        if name == "core.app" or name.startswith("core.app."):
+        if name == "core.app" or name.startswith("core.app.") or name == "core.admin_data":
             del sys.modules[name]
 
 
@@ -411,6 +405,31 @@ def _render_dashboard() -> None:
         .st-key-view_tabs [role="radiogroup"] label > div:first-child {
             display: none;
         }
+        /* Keep the map at its iframe height. Top-align the side panel so two
+           metrics do not stretch a blank band down to the charts. */
+        .st-key-map_region [data-testid="stHorizontalBlock"] {
+            align-items: start !important;
+        }
+        .st-key-map_region iframe {
+            display: block;
+        }
+        .st-key-map_region,
+        .st-key-below_map {
+            margin-top: 0 !important;
+            margin-bottom: 0 !important;
+        }
+        .st-key-below_map [data-testid="stHeading"]:first-child h3,
+        .st-key-below_map [data-testid="stHeading"]:first-child {
+            padding-top: 0.15rem;
+            margin-top: 0;
+        }
+        .st-key-case_study_metrics [data-testid="stVerticalBlock"] {
+            gap: 0.45rem !important;
+        }
+        .st-key-case_study_metrics [data-testid="stMetric"] {
+            padding-top: 0.15rem;
+            padding-bottom: 0.15rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -456,8 +475,10 @@ def _render_dashboard() -> None:
 
     controls_area = st.container()
     with st.container(key="map_region"):
-        map_col, panel_col = st.columns([3, 2], gap="large")
-    below_area = st.container()
+        map_col, panel_col = st.columns(
+            [3, 2], gap="large", vertical_alignment="top"
+        )
+    below_area = st.container(key="below_map")
     slots = ViewSlots(controls=controls_area, panel=panel_col, below=below_area)
     shared_map = SharedMapSlot(map_col, burn_severity_years)
 
@@ -562,53 +583,52 @@ def _render_case_study_home(
             points,
             default_center=(selected_utility.centroid_lat, selected_utility.centroid_lon),
             default_zoom=9,
-            height_px=340,
+            height_px=520,
         )
     shared_map.show(
         feature_groups,
         overlay_id=overlay_id,
         center=center,
         zoom=zoom,
-        height=360,
+        height=560,
     )
     with slots.panel:
-        first_year = min(row.start_year for row in case_study_costs)
-        last_year = max(row.end_year for row in case_study_costs)
-        total_impact = cached_utility_metric(utility_id, "total_econ_impact")
-        total_impact_value = total_impact.value if total_impact is not None else None
-        utility_text = (
-            f"{selected_utility.name} {selected_utility.source_area_name}".lower()
-        )
-        if total_impact_value is None and (
-            "eweb" in utility_text
-            or ("eugene" in utility_text and "electric" in utility_text)
-        ):
-            total_impact_value = 22_146_000.0
-        st.metric(
-            (
-                "Total economic impact from wildfires "
-                f"(data range {first_year}-{last_year})"
-            ),
-            (
-                f"${total_impact_value:,.0f}"
-                if total_impact_value is not None
-                else "Data not yet available"
-            ),
-        )
+        with st.container(key="case_study_metrics", gap="small"):
+            first_year = min(row.start_year for row in case_study_costs)
+            last_year = max(row.end_year for row in case_study_costs)
+            total_impact = cached_utility_metric(utility_id, "total_econ_impact")
+            total_impact_value = total_impact.value if total_impact is not None else None
+            utility_text = (
+                f"{selected_utility.name} {selected_utility.source_area_name}".lower()
+            )
+            if total_impact_value is None and (
+                "eweb" in utility_text
+                or ("eugene" in utility_text and "electric" in utility_text)
+            ):
+                total_impact_value = 22_146_000.0
+            st.metric(
+                "Total economic impact from wildfires",
+                (
+                    f"${total_impact_value:,.0f}"
+                    if total_impact_value is not None
+                    else "Data not yet available"
+                ),
+                help=f"Data range {first_year}-{last_year}",
+            )
 
-        pre_fire_revenue = cached_utility_metric(
-            utility_id,
-            "pre_fire_annual_operating_revenue",
-        )
-        st.metric(
-            "Pre-Fire Annual Operating Revenue",
-            (
-                f"${pre_fire_revenue.value:,.0f}"
-                if pre_fire_revenue is not None
-                and pre_fire_revenue.value is not None
-                else "Data not yet available"
-            ),
-        )
+            pre_fire_revenue = cached_utility_metric(
+                utility_id,
+                "pre_fire_annual_operating_revenue",
+            )
+            st.metric(
+                "Pre-Fire Annual Operating Revenue",
+                (
+                    f"${pre_fire_revenue.value:,.0f}"
+                    if pre_fire_revenue is not None
+                    and pre_fire_revenue.value is not None
+                    else "Data not yet available"
+                ),
+            )
     with slots.below:
         render_economic_impact_data(
             case_study_costs,

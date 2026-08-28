@@ -180,20 +180,26 @@ def _render_scalar_metric_form(
         key="admin_scalar_metric_selection",
     )
     metric = metric_labels[metric_label]
-    is_utility_metric = metric.key in {
-        "pre_fire_annual_operating_revenue",
-        "total_econ_impact",
-    }
+    is_utility_metric = metric.scope == "utility"
+
+    utility_label = st.selectbox(
+        "Water utility",
+        list(utility_labels.keys()),
+        key="admin_scalar_utility",
+    )
+    utility = utility_labels[utility_label]
+    wildfire = None
+    if is_utility_metric:
+        st.caption("This metric applies to the selected utility as a whole.")
+    else:
+        wildfire_label = st.selectbox(
+            "Wildfire",
+            list(wildfire_labels.keys()),
+            key="admin_scalar_wildfire",
+        )
+        wildfire = wildfire_labels[wildfire_label]
 
     with st.form("admin_scalar_metric"):
-        utility_label = st.selectbox("Water utility", list(utility_labels.keys()))
-        utility = utility_labels[utility_label]
-        wildfire = None
-        if is_utility_metric:
-            st.caption("This metric applies to the selected utility as a whole.")
-        else:
-            wildfire_label = st.selectbox("Wildfire", list(wildfire_labels.keys()))
-            wildfire = wildfire_labels[wildfire_label]
         value = st.number_input("Value", value=0.0, format="%.6f")
         unit = st.text_input("Unit", value=metric.unit or "")
         method = st.text_input("Method", value="manual admin update")
@@ -284,44 +290,52 @@ def _render_case_study_cost_form(
     )
     using_coordinates = location_mode.startswith("Enter coordinates")
 
-    with st.form("admin_case_study_costs"):
-        custom_name = ""
-        custom_state = ""
-        latitude = 0.0
-        longitude = 0.0
-        if using_coordinates:
-            custom_name = st.text_input("Utility name")
-            custom_state = st.selectbox(
-                "State",
-                US_STATE_ABBREVIATIONS,
-                index=None,
-                placeholder="Select a state",
-            )
-            latitude = st.number_input(
-                "Latitude",
-                min_value=-90.0,
-                max_value=90.0,
-                value=None,
-                placeholder="e.g. 44.0521",
-                format="%.6f",
-            )
-            longitude = st.number_input(
-                "Longitude",
-                min_value=-180.0,
-                max_value=180.0,
-                value=None,
-                placeholder="e.g. -123.0868",
-                format="%.6f",
-            )
+    custom_name = ""
+    custom_state = None
+    latitude = None
+    longitude = None
+    utility = None
+    if using_coordinates:
+        st.caption("This utility is not in the EMBER catalog. Enter a map point instead.")
+        custom_name = st.text_input("Utility name", key="admin_case_study_custom_name")
+        custom_state = st.selectbox(
+            "State",
+            US_STATE_ABBREVIATIONS,
+            index=None,
+            placeholder="Select a state",
+            key="admin_case_study_custom_state",
+        )
+        latitude = st.number_input(
+            "Latitude",
+            min_value=-90.0,
+            max_value=90.0,
+            value=None,
+            placeholder="e.g. 44.0521",
+            format="%.6f",
+            key="admin_case_study_latitude",
+        )
+        longitude = st.number_input(
+            "Longitude",
+            min_value=-180.0,
+            max_value=180.0,
+            value=None,
+            placeholder="e.g. -123.0868",
+            format="%.6f",
+            key="admin_case_study_longitude",
+        )
+    else:
+        utility_label = st.selectbox(
+            "Water utility",
+            list(utility_labels),
+            key="admin_case_study_utility",
+        )
+        utility = utility_labels[utility_label]
+        if utility.utility_id in existing_utility_ids:
+            st.write(f"Replacing all existing case-study rows for **{utility.name}**.")
         else:
-            utility_label = st.selectbox("Water utility", list(utility_labels))
-            utility = utility_labels[utility_label]
-            if utility.utility_id in existing_utility_ids:
-                st.write(
-                    f"Replacing all existing case-study rows for **{utility.name}**."
-                )
-            else:
-                st.write(f"Creating a case study for **{utility.name}**.")
+            st.write(f"Creating a case study for **{utility.name}**.")
+
+    with st.form("admin_case_study_costs"):
         uploaded_file = st.file_uploader("Case-study CSV", type=["csv"])
         submitted = st.form_submit_button("Replace case-study cost data")
 

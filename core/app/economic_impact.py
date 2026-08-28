@@ -368,7 +368,6 @@ def render_economic_impact_data(
     if not rows:
         return
 
-    st.divider()
     cost_rows = yearly_wildfire_amounts(rows, item_type="Cost")
     cost_per_fire = wildfire_cost_totals(rows)
     aid_rows = yearly_wildfire_amounts(rows, item_type="Aid")
