@@ -70,7 +70,7 @@ from core.app.selector_controls import render_case_study_selector
 from core.burn_severity import load_burn_severity_assets
 from core.catalog import Catalog
 from core.registry import load_metric_registry
-from core.storage import get_storage
+from core.storage import resolve_app_storage
 
 st.set_page_config(page_title="EMBER", layout="wide")
 
@@ -90,7 +90,7 @@ _LOADING_FACTS = (
 @st.cache_resource
 def cached_storage():
     """Create storage backend once per Streamlit process."""
-    return get_storage()
+    return resolve_app_storage()
 
 
 @st.cache_resource
@@ -249,7 +249,7 @@ def _render_admin_launcher(current_view_mode: str) -> None:
         <style>
         .ember-admin-launcher {
             position: fixed;
-            right: 1rem;
+            left: 1rem;
             bottom: 0.75rem;
             z-index: 9999;
             color: #777;
@@ -405,13 +405,21 @@ def _render_dashboard() -> None:
         .st-key-view_tabs [role="radiogroup"] label > div:first-child {
             display: none;
         }
-        /* Keep the map at its iframe height. Top-align the side panel so two
-           metrics do not stretch a blank band down to the charts. */
+        /* Clip the side panel to the map height so a tall metrics/features
+           column cannot stretch a blank band above the charts. */
         .st-key-map_region [data-testid="stHorizontalBlock"] {
             align-items: start !important;
+            max-height: 560px;
+            overflow: hidden;
         }
         .st-key-map_region iframe {
             display: block;
+            height: 560px !important;
+        }
+        .st-key-map_side_panel,
+        .st-key-map_side_panel [data-testid="stVerticalBlock"] {
+            max-height: 560px;
+            overflow-y: auto;
         }
         .st-key-map_region,
         .st-key-below_map {
@@ -475,9 +483,13 @@ def _render_dashboard() -> None:
 
     controls_area = st.container()
     with st.container(key="map_region"):
-        map_col, panel_col = st.columns(
+        map_col, panel_outer = st.columns(
             [3, 2], gap="large", vertical_alignment="top"
         )
+        with panel_outer:
+            panel_col = st.container(
+                height=560, border=False, key="map_side_panel"
+            )
     below_area = st.container(key="below_map")
     slots = ViewSlots(controls=controls_area, panel=panel_col, below=below_area)
     shared_map = SharedMapSlot(map_col, burn_severity_years)

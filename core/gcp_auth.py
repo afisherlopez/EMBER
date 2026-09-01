@@ -1,17 +1,11 @@
-"""Bootstrap GCP credentials and config from Streamlit secrets for cloud deployment.
+"""Bootstrap the public-app service account before any GCS client is created.
 
-Local dev keeps working exactly as before: with no Streamlit secrets configured, this is a
-no-op and the app authenticates through Application Default Credentials (``gcloud auth
-application-default login``) or an explicit ``GOOGLE_APPLICATION_CREDENTIALS`` file.
+The dashboard is meant to be used without a personal ``gcloud`` login. Readers
+authenticate as the EMBER service account, the same identity Streamlit Community
+Cloud uses. User Application Default Credentials are not consulted.
 
-On Streamlit Community Cloud there is no ADC and no ``.env``. There, an operator pastes a
-read-only service-account key (and optional config) into the app's **Secrets**. This module
-materializes that key to a temp file and points every GCS reader at it through
-``GOOGLE_APPLICATION_CREDENTIALS`` — the single credential DuckDB (via gcsfs),
-google-cloud-storage, and GDAL/rio-tiler all understand.
-
-``bootstrap_gcp_credentials()`` must run **before** ``core.settings`` is imported so pydantic
-picks up any env vars injected here.
+``bootstrap_gcp_credentials()`` must run **before** ``core.settings`` is imported so
+pydantic and google-cloud-storage see ``GOOGLE_APPLICATION_CREDENTIALS``.
 """
 
 from __future__ import annotations
@@ -19,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from pathlib import Path
 from typing import Any
 
 # Plain config values that may be supplied via st.secrets and forwarded to the environment,
@@ -36,34 +31,18 @@ _CONFIG_KEYS = (
 )
 # TOML table holding the service-account JSON fields (see docs/deployment.md).
 _SERVICE_ACCOUNT_KEY = "gcp_service_account"
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_LOCAL_SERVICE_ACCOUNT = _PROJECT_ROOT / "secrets" / "ember-sa.json"
 
 
-def _bootstrap_gdal_from_local_adc() -> None:
-    """Expose local gcloud user ADC fields in the names GDAL's GCS driver reads."""
-    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-        return
-    cloud_config = os.environ.get("CLOUDSDK_CONFIG")
-    adc_path = (
-        os.path.join(cloud_config, "application_default_credentials.json")
-        if cloud_config
-        else os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
-    )
-    if not os.path.isfile(adc_path):
-        return
-    try:
-        with open(adc_path, encoding="utf-8") as handle:
-            credentials = json.load(handle)
-    except (OSError, ValueError):
-        return
-    mappings = {
-        "GS_OAUTH2_REFRESH_TOKEN": "refresh_token",
-        "GS_OAUTH2_CLIENT_ID": "client_id",
-        "GS_OAUTH2_CLIENT_SECRET": "client_secret",
-    }
-    for environment_key, credential_key in mappings.items():
-        value = credentials.get(credential_key)
-        if value:
-            os.environ.setdefault(environment_key, str(value))
+def local_service_account_path() -> Path | None:
+    """Return the service-account JSON used by the public app, when present."""
+    explicit = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if explicit and os.path.isfile(explicit):
+        return Path(explicit)
+    if _LOCAL_SERVICE_ACCOUNT.is_file():
+        return _LOCAL_SERVICE_ACCOUNT
+    return None
 
 
 def _load_secrets() -> Any | None:
@@ -90,16 +69,26 @@ def _load_secrets() -> Any | None:
         return None
 
 
-def bootstrap_gcp_credentials() -> None:
-    """Inject GCP credentials/config from st.secrets into the environment (cloud only).
+def _materialize_service_account(info: dict[str, Any]) -> None:
+    fd, path = tempfile.mkstemp(prefix="ember_gcp_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(info, handle)
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
 
-    No-op locally (no secrets). On Streamlit Cloud it forwards config keys and writes the
-    service-account key to a temp file referenced by ``GOOGLE_APPLICATION_CREDENTIALS``.
-    An already-valid ``GOOGLE_APPLICATION_CREDENTIALS`` file is left untouched.
+
+def bootstrap_gcp_credentials() -> None:
+    """Point every GCS reader at the public-app service account.
+
+    Order: an already-valid ``GOOGLE_APPLICATION_CREDENTIALS`` file, Streamlit
+    secrets, then ``secrets/ember-sa.json``. User ADC is never used.
     """
+    existing = local_service_account_path()
+    if existing is not None:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(existing)
+        return
+
     secrets = _load_secrets()
     if secrets is None:
-        _bootstrap_gdal_from_local_adc()
         return
 
     for key in _CONFIG_KEYS:
@@ -109,20 +98,17 @@ def bootstrap_gcp_credentials() -> None:
         except Exception:  # noqa: BLE001 - never let optional config break startup
             continue
 
-    existing = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if existing and os.path.exists(existing):
+    existing = local_service_account_path()
+    if existing is not None:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(existing)
         return
 
     try:
         if _SERVICE_ACCOUNT_KEY not in secrets:
             return
         info = dict(secrets[_SERVICE_ACCOUNT_KEY])
-    except Exception:  # noqa: BLE001 - malformed/missing key => fall back to ADC
+    except Exception:  # noqa: BLE001 - malformed/missing key is handled below
         return
     if not info:
         return
-
-    fd, path = tempfile.mkstemp(prefix="ember_gcp_", suffix=".json")
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(info, handle)
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
+    _materialize_service_account(info)

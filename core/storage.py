@@ -113,13 +113,17 @@ class GCSStorage:
     bucket: str
     prefix: str = ""
     project: str = ""
+    anonymous: bool = False
     _client: gcs_storage.Client | None = field(default=None, init=False, repr=False)
 
     @property
     def client(self) -> gcs_storage.Client:
         """Lazily build and cache the GCS client (only needed for object reads)."""
         if self._client is None:
-            self._client = gcs_storage.Client(project=self.project or None)
+            if self.anonymous:
+                self._client = gcs_storage.Client.create_anonymous_client()
+            else:
+                self._client = gcs_storage.Client(project=self.project or None)
         return self._client
 
     def _object_key(self, key: str) -> str:
@@ -170,6 +174,25 @@ class GCSStorage:
         )
 
 
+def is_gcs_auth_error(exc: BaseException) -> bool:
+    """Return whether an exception is a stale or missing GCS login."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in {
+            "RefreshError",
+            "DefaultCredentialsError",
+            "Unauthenticated",
+        }:
+            return True
+        message = str(current).casefold()
+        if "invalid_grant" in message or "reauthentication is needed" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def get_storage() -> Storage:
     """Build storage backend implementation from settings."""
     if settings.ember_storage_backend == "gcs":
@@ -179,3 +202,26 @@ def get_storage() -> Storage:
             project=settings.gcs_project,
         )
     return LocalStorage(root=settings.data_root_path)
+
+
+def resolve_app_storage() -> Storage:
+    """Return the public GCS catalog, using anonymous reads if the SA login fails.
+
+    The dashboard never falls back to local sample Parquet. Ingest and publish
+    scripts still use ``get_storage()`` so a dead token fails loudly there.
+    """
+    storage = get_storage()
+    if settings.ember_storage_backend != "gcs":
+        return storage
+    try:
+        storage.exists("tables/utilities.parquet")
+    except Exception as exc:
+        if is_gcs_auth_error(exc):
+            return GCSStorage(
+                bucket=settings.gcs_bucket,
+                prefix=settings.gcs_prefix,
+                project=settings.gcs_project,
+                anonymous=True,
+            )
+        raise
+    return storage

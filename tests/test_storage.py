@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
-from core.storage import GCSStorage, LocalStorage
+from core.storage import (
+    GCSStorage,
+    LocalStorage,
+    is_gcs_auth_error,
+    resolve_app_storage,
+)
 
 
 def _gcs(prefix: str) -> GCSStorage:
@@ -62,3 +67,29 @@ def test_local_download_to_path_streams_to_destination(tmp_path: Path) -> None:
     )
 
     assert destination.read_bytes() == b"parquet-data"
+
+
+def test_is_gcs_auth_error_detects_invalid_grant() -> None:
+    """Expired user ADC should be treated as a recoverable local-dev failure."""
+    exc = RuntimeError("('invalid_grant: Bad Request', {'error': 'invalid_grant'})")
+    assert is_gcs_auth_error(exc)
+    assert not is_gcs_auth_error(FileNotFoundError("tables/utilities.parquet"))
+
+
+def test_resolve_app_storage_falls_back_to_public_gcs(monkeypatch) -> None:
+    """A dead personal login should still use the public GCS catalog."""
+    from core.settings import settings
+
+    monkeypatch.setattr(settings, "ember_storage_backend", "gcs")
+    monkeypatch.setattr(settings, "gcs_bucket", "data_main_gcs")
+    monkeypatch.setattr(settings, "gcs_prefix", "EMBER")
+    monkeypatch.setattr(settings, "gcs_project", "")
+
+    def _boom(self, key: str) -> bool:
+        raise RuntimeError("invalid_grant: Bad Request")
+
+    monkeypatch.setattr(GCSStorage, "exists", _boom)
+    storage = resolve_app_storage()
+    assert isinstance(storage, GCSStorage)
+    assert storage.anonymous is True
+    assert storage.bucket == "data_main_gcs"

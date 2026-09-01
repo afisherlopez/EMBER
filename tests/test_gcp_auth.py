@@ -1,38 +1,29 @@
-"""Tests for local GDAL authentication bootstrap."""
+"""Tests for public-app service-account bootstrap."""
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
-from core.gcp_auth import _bootstrap_gdal_from_local_adc
+from core.gcp_auth import bootstrap_gcp_credentials, local_service_account_path
 
 
-def test_local_adc_is_forwarded_to_gdal(monkeypatch, tmp_path: Path) -> None:
-    config_dir = tmp_path / "gcloud"
-    config_dir.mkdir()
-    (config_dir / "application_default_credentials.json").write_text(
-        json.dumps(
-            {
-                "type": "authorized_user",
-                "client_id": "client",
-                "client_secret": "secret",
-                "refresh_token": "refresh",
-            }
-        )
-    )
-    monkeypatch.setenv("CLOUDSDK_CONFIG", config_dir.as_posix())
+def test_local_service_account_is_preferred_over_user_adc(
+    monkeypatch, tmp_path: Path
+) -> None:
+    sa_path = tmp_path / "ember-sa.json"
+    sa_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("core.gcp_auth._LOCAL_SERVICE_ACCOUNT", sa_path)
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
-    for key in (
-        "GS_OAUTH2_CLIENT_ID",
-        "GS_OAUTH2_CLIENT_SECRET",
-        "GS_OAUTH2_REFRESH_TOKEN",
-    ):
-        monkeypatch.delenv(key, raising=False)
 
-    _bootstrap_gdal_from_local_adc()
+    assert local_service_account_path() == sa_path
+    bootstrap_gcp_credentials()
+    assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == str(sa_path)
 
-    assert os.environ["GS_OAUTH2_CLIENT_ID"] == "client"
-    assert os.environ["GS_OAUTH2_CLIENT_SECRET"] == "secret"
-    assert os.environ["GS_OAUTH2_REFRESH_TOKEN"] == "refresh"
+
+def test_explicit_credentials_env_wins(monkeypatch, tmp_path: Path) -> None:
+    explicit = tmp_path / "explicit.json"
+    explicit.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", explicit.as_posix())
+
+    assert local_service_account_path() == explicit

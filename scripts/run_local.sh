@@ -5,13 +5,13 @@
 # Usage:
 #   ./scripts/run_local.sh
 #
-# By default this runs against the bundled local sample data (no cloud credentials
-# needed). To preview the real GCS data locally instead, set these in ./.env before
-# running:
+# By default this runs against the bundled local sample data. To preview the
+# public GCS catalog locally, set these in ./.env:
 #   EMBER_STORAGE_BACKEND=gcs
 #   GCS_BUCKET=data_main_gcs
 #   GCS_PREFIX=EMBER
-#   GOOGLE_APPLICATION_CREDENTIALS=./secrets/ember-sa.json
+# The app uses secrets/ember-sa.json automatically. A personal gcloud login is
+# not required.
 #
 # Optional overrides: APP_PORT (default 8501), TILER_PORT (default 8000).
 set -euo pipefail

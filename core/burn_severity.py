@@ -33,21 +33,25 @@ def load_burn_severity_assets(storage: Storage) -> dict[int, str]:
     needs object-read access, not bucket-list access. Local development falls
     back to discovering TIFFs below the same prefix.
     """
-    if storage.exists(BURN_SEVERITY_MANIFEST):
-        payload = json.loads(storage.read_bytes(BURN_SEVERITY_MANIFEST))
-        assets = payload.get("assets", [])
-        return {
-            int(asset["year"]): str(asset["cog_uri"])
-            for asset in assets
-            if asset.get("year") is not None and asset.get("cog_uri")
-        }
+    try:
+        if storage.exists(BURN_SEVERITY_MANIFEST):
+            payload = json.loads(storage.read_bytes(BURN_SEVERITY_MANIFEST))
+            assets = payload.get("assets", [])
+            return {
+                int(asset["year"]): str(asset["cog_uri"])
+                for asset in assets
+                if asset.get("year") is not None and asset.get("cog_uri")
+            }
 
-    assets: dict[int, str] = {}
-    for uri in storage.list_uris(BURN_SEVERITY_PREFIX, suffixes=(".tif", ".tiff")):
-        year = _year_from_uri(uri)
-        if year is not None:
-            assets[year] = uri
-    return assets
+        assets: dict[int, str] = {}
+        for uri in storage.list_uris(BURN_SEVERITY_PREFIX, suffixes=(".tif", ".tiff")):
+            year = _year_from_uri(uri)
+            if year is not None:
+                assets[year] = uri
+        return assets
+    except Exception:
+        # Missing rasters or a stale GCS login should not take down the dashboard.
+        return {}
 
 
 def newest_first_asset_uris(assets: dict[int, str], years: set[int]) -> list[str]:
