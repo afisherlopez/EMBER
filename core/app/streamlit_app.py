@@ -42,11 +42,11 @@ def _drop_stale_app_modules() -> None:
     """Reload dashboard modules after a Cloud git pull that did not restart the process.
 
     Streamlit Community Cloud often re-executes this file while leaving previously
-    imported `core.app.*` modules in `sys.modules`. That can mix a new entrypoint
-    with an old `admin_view` (for example a missing coordinate form) until reboot.
+    imported `core.*` modules in `sys.modules`. That can mix a new entrypoint
+    with an old `storage` (for example `cannot import name resolve_app_storage`).
     """
     for name in list(sys.modules):
-        if name == "core.app" or name.startswith("core.app.") or name == "core.admin_data":
+        if name == "core" or name.startswith("core."):
             del sys.modules[name]
 
 
@@ -70,13 +70,18 @@ from core.app.selector_controls import render_case_study_selector
 from core.burn_severity import load_burn_severity_assets
 from core.catalog import Catalog
 from core.registry import load_metric_registry
-from core.storage import resolve_app_storage
+from core.storage import get_storage
+
+try:
+    from core.storage import resolve_app_storage as _resolve_app_storage
+except ImportError:
+    _resolve_app_storage = get_storage
 
 st.set_page_config(page_title="EMBER", layout="wide")
 
 # Increment when the cached Catalog interface changes so Streamlit does not reuse
 # an instance created from an older hot-reloaded class definition.
-CATALOG_CACHE_VERSION = 2
+CATALOG_CACHE_VERSION = 3
 _LOADING_FACTS = (
     "Did you know: 64% of community water systems in the United States experienced "
     "at least one upstream wildfire between 1984 and 2022. (Source: Science Direct)",
@@ -90,7 +95,7 @@ _LOADING_FACTS = (
 @st.cache_resource
 def cached_storage():
     """Create storage backend once per Streamlit process."""
-    return resolve_app_storage()
+    return _resolve_app_storage()
 
 
 @st.cache_resource
