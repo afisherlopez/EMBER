@@ -42,9 +42,18 @@ def _drop_stale_app_modules() -> None:
     """Reload dashboard modules after a Cloud git pull that did not restart the process.
 
     Streamlit Community Cloud often re-executes this file while leaving previously
-    imported `core.*` modules in `sys.modules`. That can mix a new entrypoint
-    with an old `storage` (for example `cannot import name resolve_app_storage`).
+    imported `core.*` modules in `sys.modules`. Drop only when those in-memory
+    modules are actually stale. Reloading `core.models` on every rerun makes
+    ``st.cache_data`` fail to pickle catalog dataclasses.
     """
+    storage_mod = sys.modules.get("core.storage")
+    map_mod = sys.modules.get("core.app.map_view")
+    storage_ok = storage_mod is None or hasattr(storage_mod, "resolve_app_storage")
+    map_ok = map_mod is None or (
+        hasattr(map_mod, "OVERVIEW_CENTER") and hasattr(map_mod, "SharedMapSlot")
+    )
+    if storage_ok and map_ok:
+        return
     for name in list(sys.modules):
         if name == "core" or name.startswith("core."):
             del sys.modules[name]
@@ -112,7 +121,7 @@ def cached_metric_registry():
     return load_metric_registry(config_dir / "metrics.yaml")
 
 
-@st.cache_data
+@st.cache_resource
 def cached_case_study_costs(utility_id: str):
     """Cache utility-scoped economic-impact source rows."""
     return cached_catalog(CATALOG_CACHE_VERSION).list_case_study_costs(utility_id)
@@ -126,7 +135,7 @@ def cached_utility_geojson(utility_id: str, area_type: str) -> dict | None:
     )
 
 
-@st.cache_data
+@st.cache_resource
 def cached_utility_sources(utility_id: str):
     """Cache direct and upstream source connections for a utility."""
     return cached_catalog(CATALOG_CACHE_VERSION).list_utility_sources(utility_id)
@@ -159,7 +168,7 @@ def cached_case_study_wildfires(utility_id: str) -> dict:
     }
 
 
-@st.cache_data
+@st.cache_resource
 def cached_utility_metric(utility_id: str, metric_key: str):
     """Cache a utility-scoped metric with legacy pair fallback."""
     return cached_catalog(CATALOG_CACHE_VERSION).get_utility_scalar(
@@ -193,19 +202,19 @@ def cached_ember_logo():
     return logo
 
 
-@st.cache_data
+@st.cache_resource
 def cached_utilities():
     """Cache utility selector rows."""
     return cached_catalog(CATALOG_CACHE_VERSION).list_utilities()
 
 
-@st.cache_data
+@st.cache_resource
 def cached_wildfires():
     """Cache wildfire selector rows used by Search by wildfire."""
     return cached_catalog(CATALOG_CACHE_VERSION).list_wildfires()
 
 
-@st.cache_data
+@st.cache_resource
 def cached_case_studies():
     """Cache uploaded utility case-study metadata."""
     return cached_catalog(CATALOG_CACHE_VERSION).list_case_studies()
