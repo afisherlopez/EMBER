@@ -13,4 +13,4 @@ Washington: [Surface Water Protection Areas](https://geo.wa.gov/datasets/WADOH::
 [Surface water sources, sales, and transfers for California community water systems](https://doi.org/10.5061/dryad.z08kprrw2). EMBER follows direct and wholesale water-system connections in the dataset to list display surface-water sources. Approximate source access points from the original project's [ArcGIS dashboard](https://bit.ly/CA_watersources_network) are drawn in blue. The original project randomly perturbed those points by up to roughly 800 meters for presentation.
 
 - **Wildfire burn perimeters and burn severity:** [MTBS CONUS](https://burnseverity.cr.usgs.gov/direct-download) dataset.
-- **Utility and economic metrics:** [TODO: Add link to methods doc]
+- **Utility and economic metrics:** Read the full report [here](https://github.com/afisherlopez/EMBER/raw/main/docs/EMBER_Final_Report.pdf).
