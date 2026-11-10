@@ -50,9 +50,17 @@ def _drop_stale_app_modules() -> None:
     map_mod = sys.modules.get("core.app.map_view")
     storage_ok = storage_mod is None or hasattr(storage_mod, "resolve_app_storage")
     map_ok = map_mod is None or (
-        hasattr(map_mod, "OVERVIEW_CENTER") and hasattr(map_mod, "SharedMapSlot")
+        hasattr(map_mod, "OVERVIEW_CENTER")
+        and hasattr(map_mod, "SharedMapSlot")
+        and hasattr(map_mod, "clear_overlay_cache")
     )
-    if storage_ok and map_ok:
+    catalog_mod = sys.modules.get("core.catalog")
+    catalog_ok = catalog_mod is None or hasattr(
+        getattr(catalog_mod, "Catalog", None), "refresh"
+    )
+    admin_mod = sys.modules.get("core.app.admin_view")
+    admin_ok = admin_mod is None or hasattr(admin_mod, "describe_write_failure")
+    if storage_ok and map_ok and catalog_ok and admin_ok:
         return
     for name in list(sys.modules):
         if name == "core" or name.startswith("core."):
@@ -67,6 +75,7 @@ from core.app.map_view import (
     SharedMapSlot,
     ViewSlots,
     build_overview_feature_groups,
+    clear_overlay_cache,
     build_utility_case_study_groups,
     map_viewport,
 )
@@ -90,7 +99,7 @@ st.set_page_config(page_title="EMBER", layout="wide")
 
 # Increment when the cached Catalog interface changes so Streamlit does not reuse
 # an instance created from an older hot-reloaded class definition.
-CATALOG_CACHE_VERSION = 3
+CATALOG_CACHE_VERSION = 4
 _LOADING_FACTS = (
     "Did you know: 64% of community water systems in the United States experienced "
     "at least one upstream wildfire between 1984 and 2022. (Source: Science Direct)",
@@ -218,6 +227,25 @@ def cached_wildfires():
 def cached_case_studies():
     """Cache uploaded utility case-study metadata."""
     return cached_catalog(CATALOG_CACHE_VERSION).list_case_studies()
+
+
+def _refresh_after_admin_write(tables: tuple[str, ...]) -> None:
+    """Reload only what an admin write changed.
+
+    Clearing every cache would also throw away the Catalog, forcing the large wildfire
+    and geometry tables to be downloaded and loaded again after each upload.
+    """
+    cached_catalog(CATALOG_CACHE_VERSION).refresh(*tables)
+    st.cache_data.clear()
+    for cached_reader in (
+        cached_case_study_costs,
+        cached_utility_sources,
+        cached_utility_metric,
+        cached_utilities,
+        cached_case_studies,
+    ):
+        cached_reader.clear()
+    clear_overlay_cache()
 
 
 def _clear_admin_login_query_param() -> None:
@@ -465,7 +493,7 @@ def _render_dashboard() -> None:
             st.session_state.pop("admin_last_write", None)
             st.session_state.pop("admin_last_write_detail", None)
             st.rerun()
-        render_admin_view(catalog, metrics_registry)
+        render_admin_view(catalog, metrics_registry, _refresh_after_admin_write)
         return
 
     with st.container(key="view_tabs"):

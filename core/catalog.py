@@ -105,6 +105,21 @@ class Catalog:
                 self._materialized.add(name)
         return f'"{name}"'
 
+    def refresh(self, *names: str) -> None:
+        """Forget loaded copies of tables so the next query re-reads them from storage.
+
+        Used after an admin write. Only the rewritten tables are reloaded, so the large
+        wildfire and geometry tables stay in memory instead of being downloaded again.
+        """
+        with self._materialization_lock:
+            for name in names:
+                if self._dataset_cache is not None:
+                    with self._dataset_download_lock:
+                        cached_file = Path(self._dataset_cache.name) / f"{name}.parquet"
+                        cached_file.unlink(missing_ok=True)
+                self._conn.execute(f'DROP TABLE IF EXISTS "{name}"')
+                self._materialized.discard(name)
+
     def _column_exists(self, table_name: str, column_name: str) -> bool:
         """Return whether a materialized dataset contains a named column."""
         self._table(table_name)

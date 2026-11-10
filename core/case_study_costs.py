@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import PurePath
@@ -88,22 +89,23 @@ def _parse_year(value: str, column: str, row_number: int) -> int:
     return year
 
 
-def _parse_years_incurred(value: str, row_number: int) -> tuple[int, int]:
+def _parse_years_incurred(
+    value: str, row_number: int, column: str = "Years Incurred"
+) -> tuple[int, int]:
     year_values = [item.strip() for item in value.split(",")]
     if not year_values or any(
         not re.fullmatch(r"\d{4}", item) for item in year_values
     ):
         raise CaseStudyCSVError(
-            f"Row {row_number}: `Years Incurred` must be one year or a "
+            f"Row {row_number}: `{column}` must be one year or a "
             "comma-separated list of years (for example, `2020` or "
-            "`2020, 2021, 2022`). Enclose a multi-year list in quotes in the CSV."
+            "`2020, 2021, 2022`), not a range such as `2020-2022`. Enclose a "
+            "multi-year list in quotes in the CSV."
         )
-    years = [
-        _parse_year(item, "Years Incurred", row_number) for item in year_values
-    ]
+    years = [_parse_year(item, column, row_number) for item in year_values]
     if any(current <= previous for previous, current in zip(years, years[1:])):
         raise CaseStudyCSVError(
-            f"Row {row_number}: years in `Years Incurred` must be unique and "
+            f"Row {row_number}: years in `{column}` must be unique and "
             "listed in ascending order."
         )
     return years[0], years[-1]
@@ -115,24 +117,54 @@ def _parse_money(value: str, column: str, row_number: int) -> float:
     if is_parenthesized:
         normalized = f"-{normalized[1:-1]}"
     try:
-        return float(normalized)
+        amount = float(normalized)
     except ValueError as exc:
         raise CaseStudyCSVError(
             f"Row {row_number}: `{column}` must be a numeric currency value."
         ) from exc
+    if not math.isfinite(amount):
+        raise CaseStudyCSVError(
+            f"Row {row_number}: `{column}` must be a numeric currency value."
+        )
+    return amount
 
 
 def parse_case_study_csv(data: bytes) -> list[CaseStudyCostInput]:
     """Parse and validate one uploaded CSV using the published case-study schema."""
     try:
         text = data.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise CaseStudyCSVError("The CSV must be UTF-8 encoded.") from exc
+    except UnicodeDecodeError:
+        # Excel's plain "CSV (Comma delimited)" export on Windows is Windows-1252.
+        try:
+            text = data.decode("cp1252")
+        except UnicodeDecodeError as exc:
+            raise CaseStudyCSVError(
+                "The CSV could not be read. Save it as `CSV UTF-8` and upload it again."
+            ) from exc
 
-    reader = csv.DictReader(io.StringIO(text))
-    actual_columns = tuple(reader.fieldnames or ())
-    if not actual_columns or any(not column.strip() for column in actual_columns):
+    try:
+        records = list(csv.reader(io.StringIO(text, newline="")))
+    except csv.Error as exc:
+        raise CaseStudyCSVError(f"The CSV is malformed: {exc}.") from exc
+    # Spreadsheet exports pad rows with trailing commas and blank lines.
+    header_index = next(
+        (
+            index
+            for index, record in enumerate(records)
+            if any(cell.strip() for cell in record)
+        ),
+        None,
+    )
+    if header_index is None:
         raise CaseStudyCSVError("The CSV must have a non-empty header row.")
+    header = [column.strip() for column in records[header_index]]
+    while header and not header[-1]:
+        header.pop()
+    if not header or any(not column for column in header):
+        raise CaseStudyCSVError(
+            "The CSV must have a non-empty header row with a name for every column."
+        )
+    actual_columns = tuple(header)
     year_column = _find_column(actual_columns, YEAR_COLUMN_ALIASES)
     cost_column = _find_column(actual_columns, COST_COLUMN_ALIASES)
     if year_column is None:
@@ -161,15 +193,18 @@ def parse_case_study_csv(data: bytes) -> list[CaseStudyCostInput]:
     notes_column = _find_column(actual_columns, ("Description and Notes",))
 
     rows: list[CaseStudyCostInput] = []
-    for row_number, row in enumerate(reader, start=2):
-        if row.get(None):
+    for row_number, record in enumerate(
+        records[header_index + 1 :], start=header_index + 2
+    ):
+        if not any(cell.strip() for cell in record):
+            continue
+        if any(cell.strip() for cell in record[len(actual_columns):]):
             raise CaseStudyCSVError(
                 f"Row {row_number}: found values beyond the declared CSV columns. "
                 "If `Years Incurred` contains multiple years, enclose the entire "
                 "comma-separated list in quotes."
             )
-        if not any((row.get(column) or "").strip() for column in actual_columns):
-            continue
+        row: dict[str, str | None] = dict(zip(actual_columns, record))
         if year_column.strip().casefold() == "start year":
             start_year = _parse_year(
                 _required_text(row, year_column, row_number),
@@ -193,6 +228,7 @@ def parse_case_study_csv(data: bytes) -> list[CaseStudyCostInput]:
             start_year, end_year = _parse_years_incurred(
                 _required_text(row, year_column, row_number),
                 row_number,
+                year_column,
             )
         source = _optional_text(row, source_column)
         if source and (PurePath(source).name != source or source in {".", ".."}):

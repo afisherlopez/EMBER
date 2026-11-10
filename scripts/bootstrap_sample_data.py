@@ -218,6 +218,16 @@ def bootstrap_sample_data(data_root: Path) -> None:
         "utility_sources",
         "source_fire_locations",
     ]:
+        # DuckDB types bare literals such as 39.43 as DECIMAL, which reaches Python as
+        # decimal.Decimal and breaks JSON serialization and float math in the app. The
+        # real ingest scripts publish DOUBLE columns, so the sample tables do the same.
+        decimal_columns = [
+            row[0]
+            for row in conn.execute(f"DESCRIBE {name}").fetchall()
+            if str(row[1]).startswith("DECIMAL")
+        ]
+        for column in decimal_columns:
+            conn.execute(f"ALTER TABLE {name} ALTER COLUMN {column} TYPE DOUBLE")
         conn.execute(f"COPY {name} TO '{(tables_dir / f'{name}.parquet').as_posix()}' (FORMAT PARQUET)")
 
 

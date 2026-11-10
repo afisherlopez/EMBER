@@ -250,6 +250,11 @@ def _map_cache() -> dict[str, Any]:
         return _FALLBACK_MAP_CACHE
 
 
+def clear_overlay_cache() -> None:
+    """Drop this session's serialized overlays so maps are rebuilt from fresh data."""
+    _map_cache()["overlays"] = {}
+
+
 def render_shared_map(
     feature_groups: list[folium.FeatureGroup],
     burn_severity_years: list[int],

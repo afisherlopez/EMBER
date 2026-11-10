@@ -235,3 +235,44 @@ def test_source_name_maps_to_case_studies_pdf() -> None:
         ("EWEB_Report_2020", "case_studies/EWEB/EWEB_Report_2020.pdf"),
         ("EWEB_Report_2021", "case_studies/EWEB/EWEB_Report_2021.pdf"),
     ]
+
+
+def test_spreadsheet_export_padding_is_ignored() -> None:
+    """Trailing empty columns and blank rows from Excel/Sheets must not block an upload."""
+    data = (
+        "Item Type,Years Incurred,Raw Value,,,\r\n"
+        "Cost,2020,100,,,\r\n"
+        ",,,,,\r\n"
+        "Cost,2021,200,,,\r\n"
+    ).encode("utf-8")
+
+    rows = parse_case_study_csv(data)
+
+    assert [row.start_year for row in rows] == [2020, 2021]
+    assert list(json.loads(rows[0].extra_fields_json)) == [
+        "Item Type",
+        "Years Incurred",
+        "Raw Value",
+    ]
+
+
+def test_values_beyond_the_header_are_still_rejected() -> None:
+    data = b"Item Type,Years Incurred,Raw Value\nCost,2020, 2021,100\n"
+
+    with pytest.raises(CaseStudyCSVError, match="Row 2: found values beyond"):
+        parse_case_study_csv(data)
+
+
+def test_windows_excel_encoding_is_accepted() -> None:
+    data = "Years Incurred,Cost,Item Summary\n2020,100,Caf\u00e9 \u2013 repairs\n".encode(
+        "cp1252"
+    )
+
+    rows = parse_case_study_csv(data)
+
+    assert rows[0].description == "Caf\u00e9 \u2013 repairs"
+
+
+def test_non_finite_costs_are_rejected() -> None:
+    with pytest.raises(CaseStudyCSVError, match="numeric currency value"):
+        parse_case_study_csv(b"Years Incurred,Cost\n2020,nan\n")

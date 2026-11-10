@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hmac
+from collections.abc import Callable
 from datetime import date
+from typing import TypeVar
 
 import streamlit as st
 
@@ -19,6 +21,11 @@ from core.case_study_costs import CaseStudyCSVError, parse_case_study_csv
 from core.catalog import Catalog
 from core.models import CaseStudy, MetricDefinition, Utility, Wildfire
 from core.settings import settings
+from core.storage import is_gcs_auth_error
+
+T = TypeVar("T")
+# Called with the names of the tables an admin write just republished.
+RefreshCallback = Callable[[tuple[str, ...]], None]
 
 # Postal abbreviations for the 50 states plus DC; searchable in the admin selectbox.
 US_STATE_ABBREVIATIONS = (
@@ -124,10 +131,68 @@ def _exit_admin_mode() -> None:
     st.session_state.pop("admin_last_write_detail", None)
 
 
-def _show_write_result(result: AdminWriteResult, detail: str | None = None) -> None:
-    """Clear cached reads, then rerun so the return button is not tied to the form submit."""
+def _clear_all_caches(_tables: tuple[str, ...]) -> None:
+    """Fallback refresh used when the caller does not supply a targeted one."""
     st.cache_data.clear()
     st.cache_resource.clear()
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def describe_write_failure(exc: BaseException) -> str:
+    """Explain a failed table write in terms an admin can act on."""
+    if is_gcs_auth_error(exc):
+        return (
+            "EMBER could not sign in to Google Cloud Storage, so the update was not "
+            "saved. The service-account key in the app's secrets is missing, expired, "
+            "or has been revoked. Ask the app owner to replace `[gcp_service_account]` "
+            "in the Streamlit secrets (see `docs/deployment.md`)."
+        )
+    error_names = {type(item).__name__ for item in _exception_chain(exc)}
+    if "Forbidden" in error_names:
+        return (
+            "The update was not saved because the app's service account is not allowed "
+            "to write to the data bucket. It needs object create, delete, and get "
+            "permission under `tables/` (see step 1 of `docs/deployment.md`)."
+        )
+    if error_names & {"NotFound", "FileNotFoundError"}:
+        return (
+            "The update was not saved because a table it depends on could not be "
+            f"found in storage: {exc}"
+        )
+    return f"The update was not saved. {type(exc).__name__}: {exc}"
+
+
+def _attempt_write(action: Callable[[], T], *, context: str = "") -> T | None:
+    """Run one table write, showing a readable error instead of crashing the app."""
+    try:
+        return action()
+    except ValueError as exc:
+        # Raised by the write helpers for input an admin can correct.
+        st.error(str(exc))
+        return None
+    except Exception as exc:  # noqa: BLE001 - any storage failure must stay on the form
+        message = describe_write_failure(exc)
+        st.error(f"{context} {message}".strip())
+        return None
+
+
+def _show_write_result(
+    result: AdminWriteResult,
+    refresh: RefreshCallback,
+    detail: str | None = None,
+    *,
+    also_changed: tuple[str, ...] = (),
+) -> None:
+    """Reload the rewritten tables, then rerun so the return button outlives the form."""
+    refresh((result.table, *also_changed))
     st.session_state["admin_last_write"] = result
     if detail:
         st.session_state["admin_last_write_detail"] = detail
@@ -149,7 +214,7 @@ def _render_pending_write_result() -> None:
     else:
         st.caption("Created a new table; there was no previous version to back up.")
     st.caption(f"Published table: `{result.table_uri}`")
-    st.info("Cached Parquet reads were cleared. Return to the dashboard to reload the updated data.")
+    st.info("Return to the dashboard to see the updated data.")
     if st.button("Return to dashboard with updated data", key="return_after_admin_write"):
         _exit_admin_mode()
         st.rerun()
@@ -168,6 +233,7 @@ def _render_scalar_metric_form(
     utilities: list[Utility],
     wildfires: list[Wildfire],
     metrics: dict[str, MetricDefinition],
+    refresh: RefreshCallback,
 ) -> None:
     st.subheader("Scalar Metric")
     st.caption("Add or replace a row in `scalar_metrics.parquet`.")
@@ -209,31 +275,40 @@ def _render_scalar_metric_form(
 
     if submitted:
         if is_utility_metric:
-            result = upsert_utility_scalar_metric(
-                utility_id=utility.utility_id,
-                metric_key=metric.key,
-                value=float(value),
-                unit=unit or None,
-                method=method or None,
-                source_note=source_note or None,
-                as_of_date=as_of_date,
+            result = _attempt_write(
+                lambda: upsert_utility_scalar_metric(
+                    utility_id=utility.utility_id,
+                    metric_key=metric.key,
+                    value=float(value),
+                    unit=unit or None,
+                    method=method or None,
+                    source_note=source_note or None,
+                    as_of_date=as_of_date,
+                )
             )
         else:
             assert wildfire is not None
-            result = upsert_scalar_metric(
-                utility_id=utility.utility_id,
-                wildfire_id=wildfire.wildfire_id,
-                metric_key=metric.key,
-                value=float(value),
-                unit=unit or None,
-                method=method or None,
-                source_note=source_note or None,
-                as_of_date=as_of_date,
+            result = _attempt_write(
+                lambda: upsert_scalar_metric(
+                    utility_id=utility.utility_id,
+                    wildfire_id=wildfire.wildfire_id,
+                    metric_key=metric.key,
+                    value=float(value),
+                    unit=unit or None,
+                    method=method or None,
+                    source_note=source_note or None,
+                    as_of_date=as_of_date,
+                )
             )
-        _show_write_result(result)
+        if result is not None:
+            _show_write_result(result, refresh)
 
 
-def _render_pair_summary_form(utilities: list[Utility], wildfires: list[Wildfire]) -> None:
+def _render_pair_summary_form(
+    utilities: list[Utility],
+    wildfires: list[Wildfire],
+    refresh: RefreshCallback,
+) -> None:
     st.subheader("Pair Summary")
     st.caption("Add or replace a row in `pair_summary.parquet`.")
     utility_labels = _utility_options(utilities)
@@ -249,19 +324,25 @@ def _render_pair_summary_form(utilities: list[Utility], wildfires: list[Wildfire
         submitted = st.form_submit_button("Save pair summary")
 
     if submitted:
-        result = upsert_pair_summary(
-            utility_id=utility.utility_id,
-            wildfire_id=wildfire.wildfire_id,
-            has_overlap=has_overlap,
-            overlap_area_km2=float(overlap_area_km2) if has_overlap else None,
-            overlap_pct_of_source=float(overlap_pct_of_source) if has_overlap else None,
+        result = _attempt_write(
+            lambda: upsert_pair_summary(
+                utility_id=utility.utility_id,
+                wildfire_id=wildfire.wildfire_id,
+                has_overlap=has_overlap,
+                overlap_area_km2=float(overlap_area_km2) if has_overlap else None,
+                overlap_pct_of_source=(
+                    float(overlap_pct_of_source) if has_overlap else None
+                ),
+            )
         )
-        _show_write_result(result)
+        if result is not None:
+            _show_write_result(result, refresh)
 
 
 def _render_case_study_cost_form(
     utilities: list[Utility],
     case_studies: list[CaseStudy],
+    refresh: RefreshCallback,
 ) -> None:
     st.subheader("Case Study Cost Data")
     st.caption(
@@ -344,12 +425,6 @@ def _render_case_study_cost_form(
     if uploaded_file is None:
         st.error("Choose a CSV file to upload.")
         return
-    try:
-        rows = parse_case_study_csv(uploaded_file.getvalue())
-    except CaseStudyCSVError as exc:
-        st.error(str(exc))
-        return
-
     if using_coordinates:
         if not custom_name.strip():
             st.error("Enter a utility name for the map point.")
@@ -360,37 +435,55 @@ def _render_case_study_cost_form(
         if latitude is None or longitude is None:
             st.error("Enter both latitude and longitude.")
             return
-        try:
-            utility_id, _location_result = upsert_case_study_point_utility(
+    try:
+        rows = parse_case_study_csv(uploaded_file.getvalue())
+    except CaseStudyCSVError as exc:
+        st.error(str(exc))
+        return
+
+    if using_coordinates:
+        mapped = _attempt_write(
+            lambda: upsert_case_study_point_utility(
                 name=custom_name.strip(),
                 state=custom_state,
                 latitude=float(latitude),
                 longitude=float(longitude),
             )
-        except ValueError as exc:
-            st.error(str(exc))
-            return
-        st.caption(
-            f"Mapped `{utility_id}` to a point at {float(latitude):.5f}, "
-            f"{float(longitude):.5f}."
         )
-        result = replace_case_study_costs(utility_id=utility_id, rows=rows)
+        if mapped is None:
+            return
+        utility_id = mapped[0]
+        result = _attempt_write(
+            lambda: replace_case_study_costs(utility_id=utility_id, rows=rows),
+            context=(
+                f"The map point for `{utility_id}` was saved, but its cost rows were "
+                "not. Upload the CSV again once the problem below is resolved."
+            ),
+        )
+        if result is None:
+            # The utilities table did change, so reload it even though the upload failed.
+            refresh(("utilities",))
+            return
         _show_write_result(
             result,
+            refresh,
             detail=(
                 f"Saved {len(rows)} uploaded row(s) for `{utility_id}` and placed a "
                 "point on the case-study map."
             ),
+            also_changed=("utilities",),
         )
         return
 
     utility_id = utility.utility_id
-    result = replace_case_study_costs(
-        utility_id=utility_id,
-        rows=rows,
+    result = _attempt_write(
+        lambda: replace_case_study_costs(utility_id=utility_id, rows=rows)
     )
+    if result is None:
+        return
     _show_write_result(
         result,
+        refresh,
         detail=(
             f"Replaced the existing data with {len(rows)} uploaded row(s) for "
             f"`{utility_id}`."
@@ -398,8 +491,17 @@ def _render_case_study_cost_form(
     )
 
 
-def render_admin_view(catalog: Catalog, metrics: dict[str, MetricDefinition]) -> None:
-    """Render the admin data editor."""
+def render_admin_view(
+    catalog: Catalog,
+    metrics: dict[str, MetricDefinition],
+    refresh: RefreshCallback | None = None,
+) -> None:
+    """Render the admin data editor.
+
+    ``refresh`` receives the names of the tables a write just republished and must
+    reload them. Without it, every Streamlit cache is cleared.
+    """
+    refresh = refresh or _clear_all_caches
     st.subheader("Admin Data Editor")
     _render_pending_write_result()
 
@@ -415,8 +517,8 @@ def render_admin_view(catalog: Catalog, metrics: dict[str, MetricDefinition]) ->
         ["Scalar metrics", "Case study costs", "Pair summaries"]
     )
     with scalar_tab:
-        _render_scalar_metric_form(utilities, wildfires, metrics)
+        _render_scalar_metric_form(utilities, wildfires, metrics, refresh)
     with costs_tab:
-        _render_case_study_cost_form(utilities, case_studies)
+        _render_case_study_cost_form(utilities, case_studies, refresh)
     with pair_tab:
-        _render_pair_summary_form(utilities, wildfires)
+        _render_pair_summary_form(utilities, wildfires, refresh)
