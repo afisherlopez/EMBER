@@ -45,6 +45,11 @@ def test_dashboard_renders_on_sample_data(sample_app: AppTest) -> None:
     sample_app.run()
 
     assert not sample_app.exception
+    # The logo is embedded in the page, so it cannot break when media requests fail.
+    assert any(
+        'alt="EMBER"' in element.value and "data:image/png;base64," in element.value
+        for element in sample_app.markdown
+    )
     sample_app.selectbox[0].set_value("Denver Water (CO)").run()
     assert not sample_app.exception
     assert sample_app.metric[0].value == "$68,000,000"

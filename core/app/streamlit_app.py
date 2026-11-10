@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import random
@@ -197,9 +199,17 @@ def cached_burn_severity_assets() -> dict[int, str]:
     return load_burn_severity_assets(cached_storage())
 
 
+LOGO_DISPLAY_WIDTH = 320
+
+
 @st.cache_resource
-def cached_ember_logo():
-    """Trim the logo once per process instead of on every rerun."""
+def cached_ember_logo() -> str:
+    """Trim the logo once per process and return it as an inline ``data:`` URI.
+
+    The logo is embedded in the page instead of going through ``st.image``, whose
+    files live in Streamlit's in-memory media store and are fetched by a separate
+    request. On the hosted app that request can fail and leave a broken image.
+    """
     with Image.open(_PROJECT_ROOT / "EMBER_logo.png") as logo_source:
         logo = logo_source.convert("RGBA")
     visible_pixels = logo.getchannel("A").point(
@@ -208,7 +218,17 @@ def cached_ember_logo():
     visible_bounds = visible_pixels.getbbox()
     if visible_bounds is not None:
         logo = logo.crop(visible_bounds)
-    return logo
+    # Twice the display width keeps the logo sharp on high-density screens.
+    target_width = LOGO_DISPLAY_WIDTH * 2
+    if logo.width > target_width:
+        logo = logo.resize(
+            (target_width, round(logo.height * target_width / logo.width)),
+            Image.LANCZOS,
+        )
+    buffer = io.BytesIO()
+    logo.save(buffer, format="PNG", optimize=True)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 @st.cache_resource
@@ -413,7 +433,11 @@ def _show_loading_panel(loading_panel=None):
 def _render_dashboard() -> None:
     """Render the EMBER dashboard."""
     with st.container(key="ember_header"):
-        st.image(cached_ember_logo(), width=320)
+        st.markdown(
+            f'<img src="{cached_ember_logo()}" alt="EMBER" '
+            f'style="width: {LOGO_DISPLAY_WIDTH}px; max-width: 100%; height: auto;">',
+            unsafe_allow_html=True,
+        )
     st.markdown(
         """
         <style>
