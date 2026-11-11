@@ -1,5 +1,8 @@
 """End-to-end admin upload tests that drive the real Streamlit app on sample data."""
 
+import os
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -237,3 +240,68 @@ def test_coordinates_for_a_mapped_utility_are_refused_with_a_message(
 
     assert not sample_app.exception
     assert sample_app.error[0].value.startswith("Utility `denver-water` is already")
+
+
+@pytest.fixture
+def reloadable_app(sample_app: AppTest, tmp_path: Path, monkeypatch) -> AppTest:
+    """App fixture for tests that make the app re-import its `core` modules.
+
+    A re-import builds a new settings object from the environment, so the sample
+    data location is supplied there. The original modules are put back afterwards
+    because other tests hold references to them.
+    """
+    monkeypatch.setenv("EMBER_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("EMBER_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("EMBER_ADMIN_PASSWORD", "test-password")
+    original_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "core" or name.startswith("core.")
+    }
+    recorded = getattr(sys, "_ember_module_mtimes", None)
+    yield sample_app
+    for name in [n for n in sys.modules if n == "core" or n.startswith("core.")]:
+        del sys.modules[name]
+    sys.modules.update(original_modules)
+    if recorded is None:
+        if hasattr(sys, "_ember_module_mtimes"):
+            del sys._ember_module_mtimes
+    else:
+        sys._ember_module_mtimes = recorded
+
+
+def test_app_recovers_from_modules_left_by_an_older_deploy(
+    reloadable_app: AppTest, monkeypatch
+) -> None:
+    """A hosted deploy can rerun the script while old `core` modules stay loaded."""
+    outdated = types.ModuleType("core.case_study_costs")
+    outdated.__file__ = sys.modules["core.case_study_costs"].__file__
+    monkeypatch.setitem(sys.modules, "core.case_study_costs", outdated)
+    monkeypatch.delitem(sys.modules, "core.app.economic_impact", raising=False)
+    monkeypatch.delattr(sys, "_ember_module_mtimes", raising=False)
+
+    reloadable_app.run()
+
+    assert not reloadable_app.exception
+    assert hasattr(sys.modules["core.case_study_costs"], "total_wildfire_cost")
+
+
+def test_app_reloads_modules_when_a_source_file_changes(
+    reloadable_app: AppTest,
+) -> None:
+    reloadable_app.run()
+    assert not reloadable_app.exception
+    loaded = sys.modules["core.case_study_costs"]
+    source = Path(loaded.__file__)
+    original = source.stat()
+
+    try:
+        os.utime(source, (original.st_atime, original.st_mtime + 5))
+        reloadable_app.run()
+        assert not reloadable_app.exception
+        assert sys.modules["core.case_study_costs"] is not loaded
+        reloaded = sys.modules["core.case_study_costs"]
+        reloadable_app.run()
+        assert sys.modules["core.case_study_costs"] is reloaded
+    finally:
+        os.utime(source, (original.st_atime, original.st_mtime))

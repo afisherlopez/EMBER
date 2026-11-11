@@ -40,33 +40,78 @@ from core.gcp_auth import bootstrap_gcp_credentials
 bootstrap_gcp_credentials()
 
 
+def _is_app_module(name: str) -> bool:
+    return name == "core" or name.startswith("core.")
+
+
+def _app_module_mtimes() -> dict[str, float]:
+    """Return the source-file modification time of every loaded `core.*` module."""
+    mtimes: dict[str, float] = {}
+    for name, module in list(sys.modules.items()):
+        source = getattr(module, "__file__", None)
+        if not _is_app_module(name) or not source:
+            continue
+        try:
+            mtimes[name] = os.path.getmtime(source)
+        except OSError:
+            continue
+    return mtimes
+
+
+def _loaded_modules_are_stale() -> bool:
+    """Return whether any loaded `core.*` module no longer matches its file on disk."""
+    # Modification times recorded when the modules were imported. Kept on `sys`
+    # because this script's own globals are rebuilt on every rerun.
+    recorded: dict[str, float] | None = getattr(sys, "_ember_module_mtimes", None)
+    current = _app_module_mtimes()
+    if recorded is not None:
+        return any(
+            name in recorded and recorded[name] != mtime
+            for name, mtime in current.items()
+        )
+    # First run of this version of the script in a process that already holds
+    # modules imported by an older version: there is no record yet, so look for
+    # names the current code needs.
+    required = {
+        "core.storage": ("resolve_app_storage",),
+        "core.app.map_view": ("OVERVIEW_CENTER", "SharedMapSlot", "clear_overlay_cache"),
+        "core.app.admin_view": ("describe_write_failure",),
+        "core.case_study_costs": (
+            "is_source_url",
+            "rows_excluded_from_totals",
+            "total_wildfire_cost",
+        ),
+    }
+    for name, attributes in required.items():
+        module = sys.modules.get(name)
+        if module is not None and not all(
+            hasattr(module, attribute) for attribute in attributes
+        ):
+            return True
+    catalog_mod = sys.modules.get("core.catalog")
+    return catalog_mod is not None and not hasattr(
+        getattr(catalog_mod, "Catalog", None), "refresh"
+    )
+
+
 def _drop_stale_app_modules() -> None:
     """Reload dashboard modules after a Cloud git pull that did not restart the process.
 
     Streamlit Community Cloud often re-executes this file while leaving previously
-    imported `core.*` modules in `sys.modules`. Drop only when those in-memory
-    modules are actually stale. Reloading `core.models` on every rerun makes
+    imported `core.*` modules in `sys.modules`, so new code here would import names
+    the old modules do not have. Any change to a `core` source file is detected by
+    its modification time and triggers one full reload. Modules are dropped only
+    when actually stale: reloading `core.models` on every rerun makes
     ``st.cache_data`` fail to pickle catalog dataclasses.
     """
-    storage_mod = sys.modules.get("core.storage")
-    map_mod = sys.modules.get("core.app.map_view")
-    storage_ok = storage_mod is None or hasattr(storage_mod, "resolve_app_storage")
-    map_ok = map_mod is None or (
-        hasattr(map_mod, "OVERVIEW_CENTER")
-        and hasattr(map_mod, "SharedMapSlot")
-        and hasattr(map_mod, "clear_overlay_cache")
-    )
-    catalog_mod = sys.modules.get("core.catalog")
-    catalog_ok = catalog_mod is None or hasattr(
-        getattr(catalog_mod, "Catalog", None), "refresh"
-    )
-    admin_mod = sys.modules.get("core.app.admin_view")
-    admin_ok = admin_mod is None or hasattr(admin_mod, "describe_write_failure")
-    if storage_ok and map_ok and catalog_ok and admin_ok:
+    if not _loaded_modules_are_stale():
         return
     for name in list(sys.modules):
-        if name == "core" or name.startswith("core."):
+        if _is_app_module(name):
             del sys.modules[name]
+    # Cached objects were built by the old classes; rebuild them from the new code.
+    st.cache_data.clear()
+    st.cache_resource.clear()
 
 
 _drop_stale_app_modules()
@@ -97,6 +142,10 @@ try:
     from core.storage import resolve_app_storage as _resolve_app_storage
 except ImportError:
     _resolve_app_storage = get_storage
+
+# Remember which file versions the imports above loaded, so the next rerun can tell
+# whether a deploy has replaced any of them.
+sys._ember_module_mtimes = _app_module_mtimes()  # type: ignore[attr-defined]
 
 st.set_page_config(page_title="EMBER", layout="wide")
 
