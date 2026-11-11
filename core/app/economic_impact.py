@@ -9,6 +9,8 @@ import streamlit as st
 
 from core.case_study_costs import (
     case_study_costs_to_csv,
+    is_source_url,
+    rows_excluded_from_totals,
     source_pdf_references,
     wildfire_cost_totals,
     yearly_wildfire_amounts,
@@ -227,7 +229,11 @@ def _render_linked_table(rows: list[CaseStudyCost], storage: Storage) -> None:
             if header.strip().casefold() == "source":
                 source_links = []
                 for source_label, source_key in source_pdf_references(raw_value):
-                    source_url = storage.public_url_for(source_key)
+                    source_url = (
+                        source_key
+                        if is_source_url(source_key)
+                        else storage.public_url_for(source_key)
+                    )
                     source_links.append(
                         f'<a href="{escape(source_url, quote=True)}" target="_blank" '
                         f'rel="noopener noreferrer">{escape(source_label)}</a>'
@@ -368,6 +374,13 @@ def render_economic_impact_data(
     if not rows:
         return
 
+    excluded = rows_excluded_from_totals(rows)
+    if excluded:
+        st.caption(
+            f"{excluded} of {len(rows)} uploaded rows are not counted in the total or "
+            "the charts because their Degree of Causation is not 1. They still appear "
+            "in the source data table below."
+        )
     cost_rows = yearly_wildfire_amounts(rows, item_type="Cost")
     cost_per_fire = wildfire_cost_totals(rows)
     aid_rows = yearly_wildfire_amounts(rows, item_type="Aid")

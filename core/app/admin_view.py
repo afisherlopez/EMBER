@@ -347,7 +347,8 @@ def _render_case_study_cost_form(
     st.subheader("Case Study Cost Data")
     st.caption(
         "Upload a CSV to replace the raw economic-impact rows for one utility. "
-        "Source PDFs must be stored in `case_studies/` with names matching the Source column."
+        "Source PDFs must be stored in `case_studies/` with names matching the Source "
+        "column. A Source entry may also be a path inside that folder or a web link."
     )
     st.caption(
         "All uploaded columns are preserved. EMBER only needs a recognizable year "

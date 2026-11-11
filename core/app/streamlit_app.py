@@ -88,6 +88,7 @@ from core.app.fire_view import render_fire_view
 from core.app.general_insights import render_general_insights
 from core.app.selector_controls import render_case_study_selector
 from core.burn_severity import load_burn_severity_assets
+from core.case_study_costs import total_wildfire_cost
 from core.catalog import Catalog
 from core.registry import load_metric_registry
 from core.storage import get_storage
@@ -674,16 +675,9 @@ def _render_case_study_home(
         with st.container(key="case_study_metrics", gap="small"):
             first_year = min(row.start_year for row in case_study_costs)
             last_year = max(row.end_year for row in case_study_costs)
-            total_impact = cached_utility_metric(utility_id, "total_econ_impact")
-            total_impact_value = total_impact.value if total_impact is not None else None
-            utility_text = (
-                f"{selected_utility.name} {selected_utility.source_area_name}".lower()
-            )
-            if total_impact_value is None and (
-                "eweb" in utility_text
-                or ("eugene" in utility_text and "electric" in utility_text)
-            ):
-                total_impact_value = 22_146_000.0
+            # The headline is always derived from the uploaded spreadsheet so it
+            # cannot drift from the rows and charts shown below it.
+            total_impact_value = total_wildfire_cost(case_study_costs)
             st.metric(
                 "Total economic impact from wildfires",
                 (
@@ -691,7 +685,12 @@ def _render_case_study_home(
                     if total_impact_value is not None
                     else "Data not yet available"
                 ),
-                help=f"Data range {first_year}-{last_year}",
+                help=(
+                    "Sum of the inflation-adjusted values in the uploaded "
+                    "spreadsheet for cost rows with a Degree of Causation of 1. "
+                    "Aid is not subtracted. "
+                    f"Data range {first_year}-{last_year}."
+                ),
             )
 
             pre_fire_revenue = cached_utility_metric(

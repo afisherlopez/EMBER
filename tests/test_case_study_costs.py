@@ -12,6 +12,8 @@ from core.case_study_costs import (
     parse_case_study_csv,
     source_pdf_key,
     source_pdf_references,
+    rows_excluded_from_totals,
+    total_wildfire_cost,
     yearly_cost_breakdown,
     yearly_cost_totals,
     yearly_wildfire_amounts,
@@ -276,3 +278,58 @@ def test_windows_excel_encoding_is_accepted() -> None:
 def test_non_finite_costs_are_rejected() -> None:
     with pytest.raises(CaseStudyCSVError, match="numeric currency value"):
         parse_case_study_csv(b"Years Incurred,Cost\n2020,nan\n")
+
+
+def _source_csv(source: str) -> bytes:
+    return f'Years Incurred,Cost,Source\n2014,100,"{source}"\n'.encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Pateros/Pateros_Report 2014",
+        "case_studies/Pateros/Pateros_Report_2014.pdf",
+        "https://example.org/reports/pateros-2014.pdf",
+        "Pateros_Report 2014, https://example.org/a/b",
+        "FY 2014/15 Budget",
+    ],
+)
+def test_source_accepts_folder_paths_and_links(source: str) -> None:
+    rows = parse_case_study_csv(_source_csv(source))
+
+    assert rows[0].source == source
+
+
+@pytest.mark.parametrize("source", ["../secrets/key", "Pateros/../../other", ".."])
+def test_source_rejects_paths_that_leave_the_case_study_folder(source: str) -> None:
+    with pytest.raises(CaseStudyCSVError, match="Row 2: `Source` value"):
+        parse_case_study_csv(_source_csv(source))
+
+
+def test_source_paths_and_links_resolve_to_link_targets() -> None:
+    assert source_pdf_key("Pateros/Report 2014") == "case_studies/Pateros/Report_2014.pdf"
+    assert source_pdf_key("case_studies/Pateros/Report_2014.pdf") == (
+        "case_studies/Pateros/Report_2014.pdf"
+    )
+    assert source_pdf_key("../../etc/passwd") == "case_studies/etc/passwd.pdf"
+    assert source_pdf_references("Pateros_Report 2014, https://example.org/a/b.pdf") == [
+        ("Pateros_Report 2014", "case_studies/Pateros/Pateros_Report_2014.pdf"),
+        ("https://example.org/a/b.pdf", "https://example.org/a/b.pdf"),
+    ]
+
+
+def test_headline_total_matches_fully_attributed_spreadsheet_costs() -> None:
+    rows = [
+        _row(inflation_adjusted_cost=100.0, degree_of_causation="1"),
+        _row(start_year=2021, end_year=2021, inflation_adjusted_cost=250.0),
+        _row(item_type="Aid", inflation_adjusted_cost=40.0),
+        _row(inflation_adjusted_cost=999.0, degree_of_causation="2"),
+        _row(inflation_adjusted_cost=5.0, degree_of_causation=""),
+    ]
+
+    assert total_wildfire_cost(rows) == 350.0
+    assert rows_excluded_from_totals(rows) == 2
+
+
+def test_headline_total_is_unavailable_without_qualifying_rows() -> None:
+    assert total_wildfire_cost([_row(degree_of_causation="2")]) is None

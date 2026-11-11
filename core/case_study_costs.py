@@ -8,7 +8,6 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from pathlib import PurePath
 
 from core.models import CaseStudyCost
 
@@ -231,10 +230,14 @@ def parse_case_study_csv(data: bytes) -> list[CaseStudyCostInput]:
                 year_column,
             )
         source = _optional_text(row, source_column)
-        if source and (PurePath(source).name != source or source in {".", ".."}):
-            raise CaseStudyCSVError(
-                f"Row {row_number}: `Source` must be a PDF name, not a folder path."
-            )
+        for source_item in source.split(","):
+            if not _is_safe_source(source_item):
+                raise CaseStudyCSVError(
+                    f"Row {row_number}: `Source` value `{source_item.strip()}` is not "
+                    "valid. Use a PDF name, a path inside `case_studies/` (for "
+                    "example, `Pateros/Pateros_Report_2014`), or a web link. `..` "
+                    "is not allowed."
+                )
         raw_value = _optional_text(row, raw_value_column)
         adjusted_value = _optional_text(row, adjusted_value_column)
         selected_cost_value = (
@@ -501,20 +504,71 @@ def wildfire_cost_totals(rows: list[CaseStudyCost]) -> list[dict[str, object]]:
     ]
 
 
+def total_wildfire_cost(rows: list[CaseStudyCost]) -> float | None:
+    """Sum the inflation-adjusted costs fully attributed to wildfire.
+
+    This is the same set of rows the "Cost per wildfire" chart shows: every non-Aid
+    row whose Degree of Causation is 1. Returns None when no row qualifies.
+    """
+    per_wildfire = wildfire_cost_totals(rows)
+    if not per_wildfire:
+        return None
+    return sum(float(row["Amount"]) for row in per_wildfire)
+
+
+def rows_excluded_from_totals(rows: list[CaseStudyCost]) -> int:
+    """Count uploaded rows left out of totals and charts by their Degree of Causation."""
+    return sum(1 for row in rows if not _has_full_wildfire_causation(row))
+
+
+def is_source_url(value: str) -> bool:
+    """Return whether a Source entry is a web link instead of a stored PDF."""
+    return value.strip().casefold().startswith(("http://", "https://"))
+
+
+def _source_path_parts(source: str) -> list[str]:
+    """Split a stored-PDF Source entry into folder and file-name segments."""
+    parts = [part.strip() for part in re.split(r"[\\/]+", source.strip())]
+    parts = [part for part in parts if part]
+    if parts and parts[0].casefold() == "case_studies":
+        parts = parts[1:]
+    return parts
+
+
+def _is_safe_source(source: str) -> bool:
+    """Accept web links and PDF names or paths that stay inside ``case_studies/``."""
+    if is_source_url(source):
+        return True
+    return all(part not in {".", ".."} for part in _source_path_parts(source))
+
+
 def source_pdf_key(source: str) -> str:
-    """Map a validated Source value to its PDF under the case_studies folder."""
-    filename = re.sub(r"\s+", "_", PurePath(source.strip()).name)
+    """Map a Source value to its PDF under the case_studies folder.
+
+    A bare name such as ``EWEB_Report 2020`` is filed under the folder named by its
+    prefix (``case_studies/EWEB/``). A value that already includes folders, such as
+    ``Pateros/Report 2014``, is used as written.
+    """
+    parts = [part for part in _source_path_parts(source) if part not in {".", ".."}]
+    folders, name = parts[:-1], (parts[-1] if parts else "")
+    filename = re.sub(r"\s+", "_", name)
     if not filename.lower().endswith(".pdf"):
         filename += ".pdf"
+    if folders:
+        return "/".join(["case_studies", *folders, filename])
     folder = filename.split("_", 1)[0] if "_" in filename else ""
     return f"case_studies/{folder}/{filename}" if folder else f"case_studies/{filename}"
 
 
 def source_pdf_references(source: str) -> list[tuple[str, str]]:
-    """Split a Source cell into display labels and corresponding PDF object keys."""
+    """Split a Source cell into display labels and their link targets.
+
+    The target is the web link itself for a URL, otherwise a PDF object key.
+    """
     references = []
     for item in source.split(","):
         label = item.strip()
         if label:
-            references.append((label, source_pdf_key(label)))
+            target = label if is_source_url(label) else source_pdf_key(label)
+            references.append((label, target))
     return references

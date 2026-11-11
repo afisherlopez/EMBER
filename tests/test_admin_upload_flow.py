@@ -52,7 +52,8 @@ def test_dashboard_renders_on_sample_data(sample_app: AppTest) -> None:
     )
     sample_app.selectbox[0].set_value("Denver Water (CO)").run()
     assert not sample_app.exception
-    assert sample_app.metric[0].value == "$68,000,000"
+    # The headline comes from the uploaded rows, not from a separately stored metric.
+    assert sample_app.metric[0].value == "$2,100,000"
 
 
 def test_upload_for_new_utility_appears_without_restart(sample_app: AppTest) -> None:
@@ -87,6 +88,8 @@ def test_upload_for_new_utility_appears_without_restart(sample_app: AppTest) -> 
     ]
     sample_app.selectbox[0].set_value("Eugene Water & Electric Board (OR)").run()
     assert not sample_app.exception
+    # Sum of the six inflation-adjusted Cost rows in the sample spreadsheet.
+    assert sample_app.metric[0].value == "$22,144,000"
 
 
 def test_failed_storage_write_shows_an_error_instead_of_crashing(
